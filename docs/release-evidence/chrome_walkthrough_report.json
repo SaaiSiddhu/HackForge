@@ -1,0 +1,449 @@
+{
+  "browser": {
+    "Browser": "Chrome/154.0.8037.57",
+    "Protocol-Version": "1.3",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+    "V8-Version": "15.4.80.11",
+    "WebKit-Version": "537.36 (@73c14f6228d7cd537c855007e8f88678969cc0eb)"
+  },
+  "steps": {
+    "step01_public_gallery_and_filter": {
+      "status": "PASS",
+      "homeRedirectUrl": "/projects",
+      "galleryUrl": "/projects?q=Lattice&track=trk_01",
+      "foundLattice": true
+    },
+    "step02_event_overview_and_tracks": {
+      "status": "PASS",
+      "h1": "Events"
+    },
+    "step03_registration": {
+      "status": "PASS",
+      "redirectedUrl": "/projects",
+      "validationAlertChecked": true
+    },
+    "step04_login_and_logout": {
+      "status": "PASS",
+      "loggedInRedirectUrl": "/projects"
+    },
+    "step05_team_create_invite_accept": {
+      "status": "PASS",
+      "teamId": "tm_0c21da19f6",
+      "teamInviteHref": "/invitations/OV_1122oHFRTaBxFvUHID456Hu8MyRkKm6Y1gERSbWQ",
+      "bothMembersVisible": true
+    },
+    "step06_draft_upload_and_final_submit": {
+      "status": "PASS",
+      "sawClosedDeadlineBanner": true,
+      "projectId": "prj_8672dae2fa",
+      "draftUrl": "/events/evt_open_demo/submit",
+      "hasUploadedImage": true,
+      "finalUrl": "/projects/prj_8672dae2fa"
+    },
+    "step07_public_gallery_visibility": {
+      "status": "PASS",
+      "projectTitle": "Browser Verified Mesh 471648",
+      "visibleInPublicGallery": true,
+      "visibleInPublicDetail": true
+    },
+    "step08_organizer_event_track_rubric": {
+      "status": "PASS",
+      "createdEventId": "evt_b_471648",
+      "openEvtManageTitle": "HackForge Spring Demo Hackathon 2026"
+    },
+    "step09_judge_invite_and_accept": {
+      "status": "PASS",
+      "judgeInviteUrl": "/events/evt_open_demo/judges/invite/O-L8S1RNBLYZZeIR9fAZhldMI8DYPiNIiQcJC9cloys",
+      "redirectedUrl": "/events/evt_open_demo/judge"
+    },
+    "step10_judge_assignment": {
+      "status": "PASS",
+      "batchAssignUrl": "/events/evt_open_demo/manage?tab=assignments",
+      "projectId": "prj_8672dae2fa"
+    },
+    "step11_judge_queue_draft_and_finalize": {
+      "status": "PASS",
+      "queueContainedProject": true,
+      "draftSaved": true,
+      "finalizedVisible": true
+    },
+    "step12_organizer_progress_results_snapshot": {
+      "status": "PASS",
+      "snapshotUrl": "/events/evt_01/manage/results?snapshot_id=snp_evt_01_1790520484_0b93f3e1",
+      "hasLiveResultsBeforeSnapshot": true,
+      "hasImmutableSnapshotBanner": true,
+      "hasVerifiedManifestBadge": true,
+      "hasJudgeCalibrationTable": true,
+      "hasConnectivityStatus": true
+    },
+    "step13_csv_exports": {
+      "status": "PASS",
+      "exports": {
+        "/events/evt_01/export/judging.csv": {
+          "status": 200,
+          "contentType": "text/csv; charset=utf-8",
+          "lineCount": 7,
+          "header": "rank,project_id,project_title,track_id,team_id,team_name,normalized_index,normalized_rank,raw_mean,raw_rank,completed_reviews,target_reviews,coverage_status,is_provisional,rubric_id,component_id,component_normalized_rank\r"
+        },
+        "/events/evt_01/export/reviews.csv": {
+          "status": 200,
+          "contentType": "text/csv; charset=utf-8",
+          "lineCount": 127,
+          "header": "review_id,event_id,judge_id,judge_name,judge_email,project_id,project_title,track_id,status,rubric_id,rubric_version,raw_score,is_eligible,ineligibility_reason,created_at,updated_at\r"
+        },
+        "/events/evt_01/export/assignments.csv": {
+          "status": 200,
+          "contentType": "text/csv; charset=utf-8",
+          "lineCount": 127,
+          "header": "assignment_id,event_id,judge_id,judge_name,judge_email,project_id,project_title,assigned_at,review_status,is_completed\r"
+        },
+        "/events/evt_01/export/teams.csv": {
+          "status": 200,
+          "contentType": "text/csv; charset=utf-8",
+          "lineCount": 45,
+          "header": "team_id,event_id,team_name,track_id,captain_account_id,member_count,member_emails,project_id,project_title\r"
+        },
+        "/events/evt_01/export/projects.csv": {
+          "status": 200,
+          "contentType": "text/csv; charset=utf-8",
+          "lineCount": 42,
+          "header": "project_id,event_id,title,tagline,track_id,team_id,team_name,status,submitted_at,assigned_judges_count,completed_reviews_count\r"
+        },
+        "/events/evt_01/export/judges-calibration.csv": {
+          "status": 200,
+          "contentType": "text/csv; charset=utf-8",
+          "lineCount": 271,
+          "header": "judge_id,judge_name,judge_email,event_id,cohort_id,track_id,rubric_id,sample_count_N,mean_score,population_std_dev,is_usable,unusable_reason\r"
+        }
+      }
+    },
+    "step14_role_denial_checks": {
+      "status": "PASS",
+      "manageDenied403": true,
+      "resultsDenied403": true,
+      "judgeDenied403": true
+    }
+  },
+  "viewportAndA11yChecks": [
+    {
+      "label": "gallery_home",
+      "url": "/projects",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "gallery_filtered",
+      "url": "/projects?q=Lattice&track=trk_01",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "events_overview",
+      "url": "/events",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "login",
+      "url": "/login",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "register",
+      "url": "/register",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "team_new",
+      "url": "/events/evt_open_demo/teams/new",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "team_detail",
+      "url": "/teams/tm_0c21da19f6",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "team_invitation",
+      "url": "/invitations/OV_1122oHFRTaBxFvUHID456Hu8MyRkKm6Y1gERSbWQ",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "submit_form",
+      "url": "/events/evt_open_demo/submit",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "project_detail",
+      "url": "/projects/prj_8672dae2fa",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "event_new",
+      "url": "/events/new",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "event_manage",
+      "url": "/events/evt_open_demo/manage",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "judge_invite_accept",
+      "url": "/events/evt_open_demo/judges/invite/O-L8S1RNBLYZZeIR9fAZhldMI8DYPiNIiQcJC9cloys",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "judge_dashboard",
+      "url": "/events/evt_open_demo/judge",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "judge_review",
+      "url": "/events/evt_open_demo/judge/projects/prj_8672dae2fa/review",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "event_results_live",
+      "url": "/events/evt_01/manage/results",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "event_results_snapshot",
+      "url": "/events/evt_01/manage/results?snapshot_id=snp_evt_01_1790520484_0b93f3e1",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    },
+    {
+      "label": "error_403",
+      "url": "/events/evt_01/manage",
+      "desktop": {
+        "scrollWidth": 1280,
+        "clientWidth": 1280,
+        "overflow": false
+      },
+      "mobile": {
+        "scrollWidth": 375,
+        "clientWidth": 375,
+        "overflow": false
+      },
+      "unlabeledControls": []
+    }
+  ],
+  "keyboardFocus": [
+    {
+      "tag": "A",
+      "text": "HF / HackForge",
+      "outlineStyle": "solid",
+      "outlineWidth": "2px",
+      "outlineColor": "rgb(185, 245, 106)",
+      "matchesFocusVisible": true
+    },
+    {
+      "tag": "A",
+      "text": "Gallery",
+      "outlineStyle": "solid",
+      "outlineWidth": "2px",
+      "outlineColor": "rgb(185, 245, 106)",
+      "matchesFocusVisible": true
+    },
+    {
+      "tag": "A",
+      "text": "Events",
+      "outlineStyle": "solid",
+      "outlineWidth": "2px",
+      "outlineColor": "rgb(185, 245, 106)",
+      "matchesFocusVisible": true
+    },
+    {
+      "tag": "A",
+      "text": "Log In",
+      "outlineStyle": "solid",
+      "outlineWidth": "2px",
+      "outlineColor": "rgb(185, 245, 106)",
+      "matchesFocusVisible": true
+    },
+    {
+      "tag": "A",
+      "text": "Sign Up",
+      "outlineStyle": "solid",
+      "outlineWidth": "2px",
+      "outlineColor": "rgb(185, 245, 106)",
+      "matchesFocusVisible": true
+    },
+    {
+      "tag": "INPUT",
+      "text": "q",
+      "outlineStyle": "solid",
+      "outlineWidth": "2px",
+      "outlineColor": "rgb(185, 245, 106)",
+      "matchesFocusVisible": true
+    }
+  ]
+}

@@ -1,0 +1,120 @@
+{
+  "rehearsedAt": "2026-09-27T17:16:32.002Z",
+  "sourceCommit": "70f2e34",
+  "deploymentProject": "hackforge-rehearsal",
+  "baseUrl": "http://127.0.0.1:18080",
+  "viewport": "1280x800",
+  "browser": {
+    "Browser": "Chrome/154.0.8037.57",
+    "Protocol-Version": "1.3",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+    "V8-Version": "15.4.80.11",
+    "Revision": "@73c14f6228d7cd537c855007e8f88678969cc0eb"
+  },
+  "totalAutomatedExecutionMs": 9695,
+  "totalAutomatedExecutionSeconds": 9.7,
+  "estimatedHumanNarratedDurationMinutes": "4:15 - 4:45 (well within 5:00 cap)",
+  "segments": {
+    "segment1_startup_and_public_gallery": {
+      "status": "PASS",
+      "durationMs": 904,
+      "healthz": {
+        "status": "ok",
+        "service": "hackforge",
+        "database": "connected"
+      },
+      "initialFixtureCountVerified": 41,
+      "filteredProjectVerified": "Slow Trail (trk_01)",
+      "detailProjectVerified": "Glass Signal (prj_01)"
+    },
+    "segment2_participant_draft_and_submit": {
+      "status": "PASS",
+      "durationMs": 2196,
+      "closedEventRefusedOnEvt01": true,
+      "eventId": "evt_open_demo",
+      "teamId": "tm_open_demo",
+      "trackId": "trk_demo_02",
+      "trackName": "AI & Machine Learning",
+      "projectId": "prj_abd816442d",
+      "projectTitle": "EdgeCache Zero",
+      "draftVersion1AndThumbnailVerified": true,
+      "finalProjectUrl": "/projects/prj_abd816442d"
+    },
+    "segment3_organizer_target_and_batch_assign": {
+      "status": "PASS",
+      "durationMs": 2364,
+      "configuredTargetReviewsPerProject": 2,
+      "eligibleJudgesOnTrkDemo02": [
+        "jdg_open_a (Judge Alpha)",
+        "jdg_open_b (Judge Beta)"
+      ],
+      "progressAfterBatchAssignment": {
+        "totalAssignments": 2,
+        "finalized": 0,
+        "inDraft": 0,
+        "unstarted": 2,
+        "underCoveredProjects": 1,
+        "judgesWithOutstandingReviews": 2
+      }
+    },
+    "segment4_judge_scoring_progress_and_isolation": {
+      "status": "PASS",
+      "durationMs": 2216,
+      "judgeId": "jdg_open_a",
+      "projectId": "prj_abd816442d",
+      "draftRawScore": 75,
+      "finalRawScore": 83.33,
+      "progressDuringDraft": {
+        "totalAssignments": 2,
+        "finalized": 0,
+        "inDraft": 1,
+        "unstarted": 1,
+        "underCoveredProjects": 1,
+        "judgesWithOutstandingReviews": 2
+      },
+      "progressAfterFinalize": {
+        "totalAssignments": 2,
+        "finalized": 1,
+        "inDraft": 0,
+        "unstarted": 1,
+        "underCoveredProjects": 1,
+        "judgesWithOutstandingReviews": 1
+      },
+      "evt01OwnScoresCheck": {
+        "status": 200,
+        "judgeId": "jdg_01",
+        "scoresCount": 1
+      },
+      "evt01PeerScoresCheck": {
+        "status": 403
+      },
+      "evt01OrganizerResultsDenied403": true
+    },
+    "segment5_evt01_normalization_snapshots_and_exports": {
+      "status": "PASS",
+      "durationMs": 1233,
+      "perTrackConnectedCohortVerified": "trk_01:rb_evt_01_v1",
+      "constantJudgeExcludedVerified": "jdg_07 (Iva Petrova)",
+      "smallSampleJudgeExcludedVerified": "jdg_01 (Tomas Varga, n=1 < 3)",
+      "diagnosticDisconnectedCohortVerified": "all:rb_evt_01_v1 (Component 1 & Component 2)",
+      "snapshotUrl": "/events/evt_01/manage/results?snapshot_id=snp_evt_01_1790529391_f56d76ac",
+      "csvExports": {
+        "/events/evt_01/export/judging.csv": {
+          "status": 200,
+          "contentType": "text/csv; charset=utf-8",
+          "lineCount": 7
+        },
+        "/events/evt_01/export/judges-calibration.csv": {
+          "status": 200,
+          "contentType": "text/csv; charset=utf-8",
+          "lineCount": 271
+        }
+      }
+    },
+    "segment6_official_acceptance_checker": {
+      "status": "PASS",
+      "durationMs": 133,
+      "verdict": "claimed T1 T2, verified T1 T2"
+    }
+  }
+}

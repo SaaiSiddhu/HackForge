@@ -143,18 +143,18 @@ Across `evt_01` (41 submitted projects, 30 judges, 126 finalized reviews, 0 excl
 When diagnostic cross-track pooling (`track_id="all"`) is selected on `evt_01`:
 - **Usable Judges**: 21 of 30 judges meet $N_j \ge 3$ and $\sigma_j > 10^{-6}$ across the pooled event.
 - **Excluded Judges (9 total)**:
-  - 8 judges have $N_j < 3$ (`jdg_01`, `jdg_11`, `jdg_12`, `jdg_14`, `jdg_17`, `jdg_22`, `jdg_26`, `jdg_30`).
-  - 1 judge (`jdg_07`, Taro Shimizu) has $N_j = 3$ with identical raw scores (`66.67`, `66.67`, `66.67`), giving $\sigma_j = 0.0 \le 10^{-6}$ (`near_zero_variance`).
+  - 8 judges have $N_j < 3$ (`jdg_01` Tomas Varga, `jdg_03` Priya Nair, `jdg_05` Kofi Mensah, `jdg_12` Dilan Yilmaz, `jdg_17` Bruno Costa, `jdg_23` Anya Sokolova, `jdg_27` Leila Nasser, `jdg_28` Pavel Ivanov).
+  - 1 judge (`jdg_07`, Iva Petrova) has $N_j = 3$ with identical raw scores (`66.67`, `66.67`, `66.67`), giving $\sigma_j = 0.0 \le 10^{-6}$ (`near_zero_variance`).
 - **Disconnected Components**:
   - **Component 1**: 20 projects across `trk_02, trk_04, trk_06, trk_08` evaluated by 10 usable judges.
   - **Component 2**: 21 projects across `trk_01, trk_03, trk_05, trk_07` evaluated by 11 usable judges.
   - Because `is_connected = False`, `normalized_rank` is `None` (withheld) for all 41 projects, and only component-local ranks (`Component 1 #1..#20` and `Component 2 #1..#21`) are reported.
 
-### Component 1 Local Rankings (`all:rb_evt_01_v1`, 20 Projects)
+### Component 1 Local Rankings (`all:rb_evt_01_v1`, Top 10 of 20 Projects)
 | Component Rank | Global Norm Rank | Raw Rank (Event) | Project ID | Title | Track | Usable / Target | Normalized Index | Raw Mean | Status |
 | :---: | :---: | :---: | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| `Component 1 #1` | — (Withheld) | #1 | `prj_34` | Iron Switch | `trk_08` | 3 / 3 | `+1.1726` | `83.33` | Verified |
-| `Component 1 #2` | — (Withheld) | #16 | `prj_09` | Hollow Signal | `trk_06` | 2 / 3 | `+1.1489` | `63.89` | **Provisional** |
+| `Component 1 #1` | — (Withheld) | #16 | `prj_09` | Hollow Signal | `trk_06` | 1 / 3 | `+1.2395` | `63.89` | **Provisional** |
+| `Component 1 #2` | — (Withheld) | #2 | `prj_34` | Iron Switch | `trk_08` | 3 / 3 | `+1.2318` | `83.33` | Verified |
 | `Component 1 #3` | — (Withheld) | #1 | `prj_11` | Salt Ledger | `trk_02` | 4 / 3 | `+0.8670` | `83.33` | Verified |
 | `Component 1 #4` | — (Withheld) | #6 | `prj_16` | Salt Kiln | `trk_04` | 3 / 3 | `+0.6884` | `75.00` | Verified |
 | `Component 1 #5` | — (Withheld) | #4 | `prj_25` | Dry Relay | `trk_02` | 3 / 3 | `+0.6095` | `77.78` | Verified |
@@ -169,14 +169,14 @@ When diagnostic cross-track pooling (`track_id="all"`) is selected on `evt_01`:
 | :---: | :---: | :---: | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
 | `Component 2 #1` | — (Withheld) | #6 | `prj_33` | Slow Trail | `trk_01` | 3 / 3 | `+0.9318` | `75.00` | Verified |
 | `Component 2 #2` | — (Withheld) | #5 | `prj_37` | Salt Loom | `trk_07` | 4 / 3 | `+0.7678` | `77.08` | Verified |
-| `Component 2 #3` | — (Withheld) | #16 | `prj_02` | Small Meadow | `trk_03` | 2 / 3 | `+0.3273` | `63.89` | **Provisional** |
-| `Component 2 #4` | — (Withheld) | #20 | `prj_39` | Paper Anchor | `trk_03` | 2 / 3 | `+0.3070` | `62.50` | **Provisional** |
+| `Component 2 #3` | — (Withheld) | #19 | `prj_02` | Small Meadow | `trk_03` | 2 / 3 | `+0.3273` | `63.89` | **Provisional** |
+| `Component 2 #4` | — (Withheld) | #21 | `prj_39` | Paper Anchor | `trk_03` | 2 / 3 | `+0.3070` | `62.50` | **Provisional** |
 | `Component 2 #5` | — (Withheld) | #9 | `prj_41` | Dry Harbour | `trk_03` | 4 / 3 | `+0.3029` | `70.83` | Verified |
 | `Component 2 #6` | — (Withheld) | #23 | `prj_35` | Warm Beacon | `trk_05` | 2 / 3 | `+0.2347` | `61.67` | **Provisional** |
 | `Component 2 #7` | — (Withheld) | #11 | `prj_04` | Green Switch | `trk_07` | 3 / 3 | `+0.1786` | `69.44` | Verified |
-| `Component 2 #8` | — (Withheld) | #30 | `prj_07` | Dry Harbour | `trk_03` | 3 / 3 | `+0.1258` | `58.33` | Verified |
+| `Component 2 #8` | — (Withheld) | #33 | `prj_07` | Dry Harbour | `trk_03` | 3 / 3 | `+0.1258` | `58.33` | Verified |
 | `Component 2 #9` | — (Withheld) | #16 | `prj_31` | Salt Ferry | `trk_01` | 3 / 3 | `+0.1121` | `63.89` | Verified |
-| `Component 2 #10` | — (Withheld) | #24 | `prj_12` | Open Beacon | `trk_07` | 3 / 3 | `+0.0560` | `61.11` | Verified |
+| `Component 2 #10` | — (Withheld) | #26 | `prj_12` | Open Beacon | `trk_07` | 3 / 3 | `+0.0560` | `61.11` | Verified |
 
 ---
 

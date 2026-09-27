@@ -11,6 +11,8 @@
   - [Statistical Normalization & Cohort Analysis (`docs/NORMALIZATION.md`)](./docs/NORMALIZATION.md)
   - [Phase 5 Release Verification Report (`docs/PHASE-5-RELEASE-VERIFICATION.md`)](./docs/PHASE-5-RELEASE-VERIFICATION.md)
   - [5-Minute Demo Script (`docs/DEMO-SCRIPT.md`)](./docs/DEMO-SCRIPT.md)
+  - [Submission & Handoff Checklist (`docs/SUBMISSION-CHECKLIST.md`)](./docs/SUBMISSION-CHECKLIST.md)
+  - [Preserved Release & Rehearsal Evidence (`docs/release-evidence/README.md`)](./docs/release-evidence/README.md)
 
 ---
 

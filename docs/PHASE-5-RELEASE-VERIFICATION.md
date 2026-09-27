@@ -94,3 +94,12 @@ Driven against `http://127.0.0.1:18080` (`hackforge-clean`) using headless `/App
 | **13** | All 6 CSV exports | **PASS** | Organizer session fetches `judging.csv` (7 lines), `reviews.csv` (127 lines), `assignments.csv` (127 lines), `teams.csv` (44 lines), `projects.csv` (42 lines), and `judges-calibration.csv` (271 lines) — all `200 OK` (`text/csv; charset=utf-8`). |
 | **14** | Role denial checks from UI | **PASS** | Participant browser context visiting `/events/evt_01/manage`, `/events/evt_01/manage/results`, and `/events/evt_01/judge` receives styled `403` error page. |
 | **A11y & Viewport** | Desktop (`1280x800`) & Mobile (`375x812`) + Labels + Keyboard Focus | **PASS** | `0` horizontal overflow pages across all 16 screens (`scrollWidth <= clientWidth`), `0` unlabeled controls, and `6` keyboard `Tab` focus stops with `2px solid rgb(185, 245, 106)` `:focus-visible` outline. |
+
+---
+
+## 6. Preserved Release Evidence & Final Demo Rehearsal
+
+- **Preserved Artifacts Index**: See [`docs/release-evidence/README.md`](./release-evidence/README.md) for the sanitized screenshots, `chrome_walkthrough_report.json`, `demo_rehearsal_report.json`, and `rehearse_demo_script.mjs`.
+- **5-Minute Demo Rehearsal**: See [`docs/DEMO-SCRIPT.md`](./DEMO-SCRIPT.md) for the corrected, end-to-end rehearsed script (`EdgeCache Zero` submitted to `AI & Machine Learning` / `trk_demo_02` on `evt_open_demo` with `Target Reviews = 2`, live draft and finalized evaluation by Judge Alpha `jdg_open_a`, organizer progress update, and explicit transition to `evt_01` for peer-score denial, connected vs. disconnected cohort normalization, `REPEATABLE READ` v2 snapshots, CSV exports, and `run.py`).
+- **Submission & Handoff Checklist**: See [`docs/SUBMISSION-CHECKLIST.md`](./SUBMISSION-CHECKLIST.md).
+
