@@ -234,6 +234,7 @@ def create_event(
     prizes: Optional[list] = None,
     questions: Optional[list] = None,
     creator_account_id: Optional[str] = None,
+    target_reviews_per_project: int = 3,
 ) -> Event:
     """Create a new hackathon event with date ordering, tracks, and questions."""
     if not event_id or not event_id.strip():
@@ -249,6 +250,8 @@ def create_event(
         raise ValueError("Minimum team size must be at least 1.")
     if max_team_size < min_team_size:
         raise ValueError("Maximum team size cannot be smaller than minimum team size.")
+    if target_reviews_per_project < 1:
+        raise ValueError("Target reviews per project must be at least 1.")
 
     # Validate date chronological ordering
     reg_open = ensure_utc(registration_open)
@@ -273,6 +276,7 @@ def create_event(
         submissions_close=sub_close,
         min_team_size=min_team_size,
         max_team_size=max_team_size,
+        target_reviews_per_project=target_reviews_per_project,
         prizes=prizes or [],
         created_by_account_id=creator_account_id,
     )
@@ -341,6 +345,7 @@ def update_event(
     min_team_size: Optional[int] = None,
     max_team_size: Optional[int] = None,
     prizes: Optional[list] = None,
+    target_reviews_per_project: Optional[int] = None,
     actor_account_id: Optional[str] = None,
 ) -> Event:
     """Update event configuration and dates with validation."""
@@ -389,6 +394,14 @@ def update_event(
         event.max_team_size = max_team_size
     if prizes is not None:
         event.prizes = prizes
+    if target_reviews_per_project is not None:
+        if target_reviews_per_project < 1:
+            raise ValueError("Target reviews per project must be at least 1.")
+        changes["target_reviews_per_project"] = {
+            "old": event.target_reviews_per_project,
+            "new": target_reviews_per_project,
+        }
+        event.target_reviews_per_project = target_reviews_per_project
 
     record_audit_log(
         db,

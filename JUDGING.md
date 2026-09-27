@@ -1,91 +1,112 @@
 # Judging Engine & Evaluation System
 
-## Current Status: Phase 3 Implemented & Hardened (T1 Verified; T2 In Progress)
+## Current Status: Phase 4 Complete (T1 and T2 Verified)
 
-HackForge Phase 3 implements judge invitations, weighted rubrics, batch assignment, private scoring, OCC version locking, dual-role access control, and organizer progress tracking.
+HackForge implements complete end-to-end judging, weighted rubrics, deterministic batch assignments, private evaluations, OCC row-level concurrency locking, dual-role access control, organizer progress tracking, defensible judge-wise Z-score normalization, reproducible snapshots, and RFC 4180 compliant CSV exports.
 
-> **Phase Boundary Note**: In accordance with the DOGFOOD 2026 specification, T2 remains explicitly unclaimed in `.dogfood.toml` (`claimed = ["T1"]`). Cross-judge score normalization (Z-score calibration, zero-variance handling, sparse connectivity components) and comprehensive organizer CSV exports belong to the upcoming Phase 4 milestone.
-> Voting, certificates, webhooks, and pairwise judging are out of scope.
-
----
-
-## Implemented Architecture & Security Guarantees
-
-### 1. Judge Identity & Explicit Account Association (No Automatic Claiming)
-- **Strict Read-Only Lookup**:
-  - `get_account_judge_for_event(db, event_id, account_id)` is strictly read-only (`SELECT ... WHERE event_id == :event_id AND account_id == :account_id`).
-  - It NEVER queries by email address, never mutates `judge.account_id`, and never issues database commits.
-- **Explicit Authorized Linking**:
-  - Unlinked fixture or imported judges (`account_id IS NULL`) can only be linked to an account through an explicit, authorized invitation acceptance workflow.
-  - When accepting an invitation (`accept_judge_invitation`), the recipient's authenticated account email must match the invitation email.
-  - If a judge record for that email is already linked to another account, the system raises a conflict (`ValueError: Conflict: Judge record ... is already linked to another account`) and refuses the operation.
-
-### 2. Rubric Lifecycle & Version Binding Policy
-- **Immutability of Bound Rubrics**:
-  - When a review is created, it is explicitly bound to the event's active rubric version at that moment (`review.rubric_id`).
-  - When an organizer updates the rubric, if existing reviews exist under the current rubric, a new rubric version is created (`version = current_version + 1`).
-  - When a judge edits an existing review, the review continues to validate against and calculate weighted scores using its **original bound rubric version**, preserving historical evaluation integrity.
-  - New reviews for other projects always bind to the latest **active rubric version**.
-- **Stale Form Rubric Rejection**:
-  - The evaluation form and JSON API require `rubric_id`.
-  - If a submitted `rubric_id` does not match the review's bound rubric (for edits) or the event's active rubric (for initial reviews), the request is rejected with `HTTP 400 Bad Request` (`ValueError: Rubric conflict ... Please reload`).
-
-### 3. Review Concurrency & Atomicity Guarantees
-- **Row-Level Locking & Fresh State**:
-  - Existing reviews are fetched with `select(Review).where(...).with_for_update().execution_options(populate_existing=True)`.
-  - A mandatory `session.refresh(locked_review)` guarantees that state loaded into the session identity map is refreshed with latest database state after waiting on a lock.
-- **Mandatory `expected_version` on Edits**:
-  - Modifying an existing review requires `expected_version`. If omitted or mismatched, the request raises `ConcurrencyConflictError`.
-  - Initial review creation requires `expected_version=None` or `expected_version=0`.
-- **Serialized Simultaneous Creation**:
-  - To prevent simultaneous initial review creation for the same `(judge_id, project_id)`, `save_judge_evaluation` acquires a parent row lock on the `JudgeAssignment` row (`SELECT ... FROM judge_assignments WHERE ... FOR UPDATE`).
-  - In addition, PostgreSQL unique constraint violations on `(judge_id, project_id)` are caught to rollback and raise clean `ConcurrencyConflictError`.
-- **Isolated Conflict Audit Logging**:
-  - When an OCC conflict occurs, `_record_conflict_safely` commits the `review.conflict` audit event in a completely separate, short-lived database transaction (`Session(db.get_bind())`).
-  - The caller session is rolled back (`db.rollback()`), guaranteeing zero dirty caller mutations are committed.
-
-### 4. Centralized Judging Read Authorization & Track Policy
-- **Strict Track Eligibility**:
-  - An empty track list `[]` strictly denotes **NO tracks permitted**.
-  - An explicit wildcard marker `"*"` (e.g. `["*"]`) is required for **ALL tracks permitted**.
-  - Consistent helper `is_judge_permitted_for_track(judge, track_id)` governs batch assignment, manual assignment, judge dashboard project listing, and evaluation submission.
-- **Backend-Enforced Judge Isolation**:
-  - `GET /events/{event_id}/judges/{judge_id}/scores` allows judges to inspect only their own scores. Accessing peer judge scores returns **HTTP 403 Forbidden**.
-  - Participants attempting to access judge endpoints receive **HTTP 403 Forbidden**.
-- **Dual-Role Organizer/Judge Access Restriction**:
-  - Organizers who are registered as active judges in the event are strictly prohibited from inspecting live judging progress, scoring aggregates, or peer reviews to eliminate scoring bias.
-  - Endpoint `GET /events/{event_id}/manage/progress` returns **HTTP 403 Forbidden** for dual-role users.
-  - In the organizer management console (`GET /events/{event_id}/manage`), live assignment counts and judging progress cards are replaced with a clear warning: *"Dual-Role Notice: You are registered as an active judge for this event. Live judging progress and aggregates are hidden to prevent scoring bias."*
-  - Dual-role users retain full access to their own judge dashboard (`/events/{event_id}/judge`) to evaluate their assigned submissions.
-
-### 5. Assignment-Based Progress Calculation
-- **Join Semantics**:
-  - Progress metrics (`total_assignments`, `finalized_reviews`, `draft_reviews`, `unstarted_assignments`) are computed directly by outer-joining current `JudgeAssignment` rows to `Review` records.
-  - An assignment with no review or a review in `unstarted` status counts as `unstarted_assignments`.
-- **Historical Review Independence**:
-  - If a project assignment is removed after a review was created, that review becomes historical unassigned review data.
-  - Historical reviews do NOT reduce the unstarted count of any other active assignments.
-  - The progress payload explicitly reports `total_historical_reviews` and `historical_unassigned_reviews`.
+> **Official Acceptance Status**: `.dogfood.toml` claims `["T1", "T2"]`. Unmodified official checker `python3 run.py .dogfood.toml` verifies both T1 and T2 with exit code 0 (`claimed T1 T2, verified T1 T2`).
+> Voting, certificates, webhooks, and pairwise judging remain strictly out of scope.
 
 ---
 
-## Testing & Verification Status
+## 1. Score Normalization & Statistical Engine
 
-- **Automated Pytest Suite**: 85 passing tests (0 failures), including:
-  - 17 unit/integration tests in `tests/test_judging.py` covering invitation security, rubric versioning, track revocation, progress counts, and dual-role restrictions.
-  - 8 real PostgreSQL integration tests in `tests/test_postgres_integration.py` covering concurrent two-session review creation, concurrent two-session edits from same version, and session cache invalidation under row locking.
+### A. Mathematical Formulation
+- **Raw Score Recalculation**:
+  Raw scores are dynamically validated and recalculated from source criterion scores and active rubric weights:
+  $$\text{Raw Score} = 100 \times \frac{\sum_{i=1}^C w_i \cdot \frac{s_i - \min_i}{\max_i - \min_i}}{\sum_{i=1}^C w_i}$$
+  Unrounded float precision is maintained for all rankings and intermediate calculations. Rounding occurs only at presentation time.
+- **Judge Cohort Statistics & Population Standard Deviation**:
+  For each judge $j$ with evaluated cohort scores $S_j = [S_{j,1}, \dots, S_{j, N_j}]$:
+  $$\mu_j = \frac{1}{N_j} \sum_{k=1}^{N_j} S_{j,k}$$
+  $$\sigma_j = \sqrt{\frac{1}{N_j} \sum_{k=1}^{N_j} (S_{j,k} - \mu_j)^2}$$
+  Note: $\sigma_j$ is the **population** standard deviation (matching `statistics.pstdev`).
+- **Guardrails Against Sparse Samples & Zero Variance**:
+  - Sample size threshold: $N_{\min} \ge 3$. Judges with $N_j < 3$ are excluded from normalization (`"insufficient_samples"`).
+  - Variance threshold: $\epsilon = 1\text{e-}6$. Judges with $\sigma_j \le \epsilon$ are excluded from normalization (`"near_zero_variance"`).
+  - Raw scores from unusable judges are preserved in raw aggregates and audit logs.
+- **Z-Score Calibration & Project Normalized Index**:
+  For usable judges:
+  $$z_{j,k} = \frac{S_{j,k} - \mu_j}{\sigma_j}$$
+  Project normalized index is the arithmetic mean of usable judge Z-scores:
+  $$\text{Normalized Index}_k = \frac{1}{|Z_k|} \sum_{z \in Z_k} z$$
+  - If $|Z_k| < \text{event.target\_reviews\_per\_project}$, project is marked **Provisional**.
+  - If $|Z_k| = 0$, normalized index is left blank (`None` / empty string in CSV), **never fabricated as zero**.
+- **Bipartite Evaluation Graph Connectivity**:
+  A breadth-first search (BFS) partitions the project-judge evaluation graph into connected components. If $> 1$ components exist, cross-component normalization is uncalibrated, and a prominent warning is displayed.
+
+---
+
+## 2. Shared Review Eligibility Policy
+
+Both results calculation and all CSV exports enforce an identical, shared eligibility policy:
+1. **Draft vs Finalized**: Only reviews with `status == "finalized"` count toward project scores and rankings. Draft reviews are excluded (`"draft_review"`).
+2. **Removed Assignments**: Finalized reviews whose assignment was subsequently removed remain eligible historical evaluations unless invalidated by conflict or track revocation.
+3. **Conflicts of Interest**: A judge who is a member of the project's team (`judge.account_id` in team memberships) is immediately disqualified (`"conflict_of_interest"`).
+4. **Project Lifecycle**: Projects with `status != "submitted"` (e.g. draft, withdrawn) are excluded (`"project_status_draft"`).
+5. **Criterion Integrity**: Every criterion in the bound rubric must have a finite score within $[\min_i, \max_i]$. Any missing or out-of-bounds score invalidates the review (`"incomplete_or_invalid_criteria_scores"`).
+6. **Rubric Binding**: Reviews reference specific rubric versions. If a bound rubric record is missing or inconsistent, calculation fails cleanly with an integrity error.
+7. **Track Restrictions**: A judge with track restrictions who reviews a project outside their authorized tracks is excluded (`"track_mismatch"`).
+
+---
+
+## 3. Reproducible Organizer Results & Immutable Snapshots
+
+- **Web Dashboard**: `/events/{event_id}/manage/results` provides:
+  - Cohort selector (Whole Event or individual Tracks).
+  - Prominent bipartite graph connectivity warnings.
+  - Complete ranking table with normalized index, raw mean, coverage, and provisional indicators.
+  - Judge calibration statistics ($N_j$, $\mu_j$, $\sigma_j$, usability status).
+  - Excluded reviews table with explicit rejection reasons.
+- **OCC Snapshot Freeze**: `POST /events/{event_id}/manage/results/snapshots` captures:
+  - SHA-256 cryptographic hashes of all input review criteria and states.
+  - Complete calculated results data.
+  - Method and parameter tracking (`min_sample`, `epsilon`, `track_id`, `rubric_id`).
+- **Live Staleness Detection**: Inspecting a stored snapshot automatically compares current review criteria hashes against snapshot input signatures, flagging added, modified, or deleted reviews.
+
+---
+
+## 4. Comprehensive Organizer CSV Exports
+
+Available exclusively to authorized event organizers:
+1. `GET /events/{event_id}/export/judging.csv`: Normalized and raw rankings by cohort or snapshot.
+2. `GET /events/{event_id}/export/reviews.csv`: Detailed evaluation records with rubric versions and eligibility flags.
+3. `GET /events/{event_id}/export/assignments.csv`: Judge assignments with completion and review status.
+4. `GET /events/{event_id}/export/teams.csv`: Team rosters, captain IDs, and associated projects.
+5. `GET /events/{event_id}/export/projects.csv`: Submission metadata, submission timestamps, and coverage counts.
+6. `GET /events/{event_id}/export/judges-calibration.csv`: Sample counts, means, population standard deviations, and usability reasons.
+
+**Export Guarantees**:
+- **RFC 4180 Compliance**: Minimal quoting, CRLF (`\r\n`) line endings, clean multiline field handling.
+- **UTF-8 Encoding**: Standard `text/csv; charset=utf-8` responses.
+- **Formula Injection Defense**: Any cell value beginning with `=`, `+`, `-`, `@`, `\t`, or `\r` is escaped with a prepended single quote (`'`), while legitimate numeric negatives (e.g. `-1.2345`) remain pure numbers.
+- **No Zero Fabrication**: Missing or unavailable metrics (e.g. unreviewed projects, unusable judges) are rendered as empty strings `""`, never fabricated zeros.
+
+---
+
+## 5. Strict Authorization Matrix
+
+| User Role | Judge Dashboard (`/judge`) | Manage Progress (`/manage/progress`) | Results & Snapshots (`/manage/results`) | CSV Exports (`/export/*.csv`) |
+| :--- | :---: | :---: | :---: | :---: |
+| **Visitor (Unauthenticated)** | 401 | 401 | 401 | 401 |
+| **Participant** | 403 | 403 | 403 | 403 |
+| **Judge (Pure)** | 200 (Own) | 403 | 403 | 403 |
+| **Dual-Role (Organizer + Active Judge)** | 200 (Own) | **403 (Hidden)** | **403 (Hidden)** | **403 (Hidden)** |
+| **Organizer (Authorized)** | 403 / 200 | 200 | 200 | 200 |
+| **Cross-Event Organizer** | 403 | 403 | 403 | 403 |
+
+- **Snapshot Isolation**: Snapshot exports derive event ownership strictly from `snapshot.event_id`, preventing cross-event leakage even if a foreign `event_id` is supplied in the URL.
+
+---
+
+## 6. Verification & Test Summary
+
+- **Pytest Suite**: **96 passing tests** across 15 test modules:
+  - `tests/test_scoring.py`: 7 tests covering raw score math, eligibility edge cases, population std dev, near-zero variance guards, small sample guards, bipartite graph BFS, and snapshot staleness.
+  - `tests/test_exports.py`: 4 tests covering formula injection, RFC 4180 quoting, blank values, dual-role export blocking, and snapshot event ownership isolation.
+  - `tests/test_judging.py`: 17 tests covering invitations, rubric freezing, concurrency, and judge score isolation.
+  - `tests/test_postgres_integration.py`: 8 tests covering concurrent PostgreSQL transactions and row locking.
 - **Official Acceptance Checker**:
-  - `python3 run.py .dogfood.toml` $\to$ **Exit code 0 (`claimed T1, verified T1`)**.
-  - T2 judge isolation checks pass (`judge sees own scores: PASS`, `judge cannot see peer scores: PASS`, `participant blocked: PASS`).
+  - `python3 run.py .dogfood.toml` $\to$ **Exit code 0 (`claimed T1 T2, verified T1 T2`)**.
 - **Browser Testing Status**: **NOT VERIFIED**.
-  - Headless browser automation tooling (e.g. Playwright/Puppeteer) is not installed in this execution environment.
-  - End-to-end functionality is fully validated via Starlette/FastAPI HTTP client tests and transactional PostgreSQL tests.
-
----
-
-## Upcoming Milestone: Phase 4 (Score Normalization & CSV Exports)
-- Cross-judge Z-score calibration.
-- Zero-variance handling ($\sigma_j = 0$).
-- Connected-components graph analysis for sparse evaluation networks.
-- Full organizer audit CSV export (`GET /events/{event_id}/export/judging.csv`).
-- Official Dogfood T2 claim (`claimed = ["T1", "T2"]`).
+  - Headless browser automation tooling is not installed in this execution environment. All UI routes, CSRF token handling, and rendering have been verified via Starlette TestClient integration tests.

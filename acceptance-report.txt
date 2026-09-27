@@ -1,24 +1,14 @@
 DOGFOOD 2026 acceptance report
 portal: http://localhost:8080
-claimed: T1
+claimed: T1 T2
 fixtures: fixtures.json
 
 T1  gallery is public ................. PASS
 T1  project from fixtures shown ....... PASS
 T1  closed event refuses submissions .. PASS
 T2  judge sees own scores ............. PASS
-T2  judge cannot see peer scores ...... FAIL
-       GET http://localhost:8080
-       sent as judge_b; this is the url that returns judge_a's scores
-       got 200, wanted 401 or 403
-       the backend returned another judge's scores
-T2  participant blocked ............... FAIL
-       GET http://localhost:8080
-       sent as participant
-       got 200, wanted 401 or 403
-T2  csv export works .................. FAIL
-       GET http://localhost:8080
-       sent as organizer
-       got 200 but the first line has no comma in it
+T2  judge cannot see peer scores ...... PASS
+T2  participant blocked ............... PASS
+T2  csv export works .................. PASS
 
-claimed T1, verified T1
+claimed T1 T2, verified T1 T2

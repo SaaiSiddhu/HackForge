@@ -656,10 +656,14 @@ def unassign_judge_from_project(
 def run_batch_assignment(
     db: Session,
     event_id: str,
-    target_reviews_per_project: int,
-    actor: Account,
+    target_reviews_per_project: Optional[int] = None,
+    actor: Optional[Account] = None,
 ) -> dict[str, Any]:
     """Deterministically assign judges to submitted projects, balancing workload and respecting tracks/conflicts."""
+    if target_reviews_per_project is None:
+        event = db.get(Event, event_id)
+        target_reviews_per_project = event.target_reviews_per_project if event else 3
+
     if target_reviews_per_project < 1:
         raise ValueError("Target reviews per project must be at least 1.")
 
@@ -891,7 +895,10 @@ def get_project_for_judge_evaluation(
     if review and review.rubric_id:
         rubric = db.get(Rubric, review.rubric_id)
         if not rubric:
-            rubric = get_active_rubric(db, event_id)
+            raise ValueError(
+                f"Historical rubric integrity error: Review references missing or deleted rubric '{review.rubric_id}'. "
+                "Historical rubric must not be silently replaced by the active rubric."
+            )
     else:
         rubric = get_active_rubric(db, event_id)
 
@@ -1077,7 +1084,10 @@ def save_judge_evaluation(
         if locked_review.rubric_id:
             rubric = db.get(Rubric, locked_review.rubric_id)
             if not rubric:
-                rubric = get_active_rubric(db, event_id)
+                raise ValueError(
+                    f"Historical rubric integrity error: Review references missing or deleted rubric '{locked_review.rubric_id}'. "
+                    "Historical rubric must not be silently replaced by the active rubric."
+                )
         else:
             rubric = get_active_rubric(db, event_id)
 
@@ -1241,6 +1251,9 @@ def get_organizer_judging_progress(db: Session, event_id: str) -> dict[str, Any]
         select(Project).where(Project.event_id == event_id, Project.status == "submitted")
     ).all()
 
+    event = db.get(Event, event_id)
+    target_reviews = event.target_reviews_per_project if event else 3
+
     project_progress = []
     projects_under_covered = []
     for p in projects:
@@ -1256,9 +1269,11 @@ def get_organizer_judging_progress(db: Session, event_id: str) -> dict[str, Any]
             "assigned_count": p_assigned,
             "finalized_count": p_finalized,
             "draft_count": p_draft,
+            "target_reviews": target_reviews,
+            "is_under_covered": p_finalized < target_reviews,
         }
         project_progress.append(item)
-        if p_finalized < 2:  # Below baseline coverage threshold
+        if p_finalized < target_reviews:
             projects_under_covered.append(item)
 
     # 3. Judges with outstanding work
@@ -1286,6 +1301,7 @@ def get_organizer_judging_progress(db: Session, event_id: str) -> dict[str, Any]
 
     return {
         "event_id": event_id,
+        "target_reviews_per_project": target_reviews,
         "total_assignments": total_assignments,
         "finalized_reviews": finalized_count,
         "draft_reviews": draft_count,

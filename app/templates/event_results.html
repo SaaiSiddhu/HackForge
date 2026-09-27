@@ -1,0 +1,356 @@
+{% extends "base.html" %}
+
+{% block title %}Results &amp; Normalization · {{ event.name }} · HackForge{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/events/{{ event.id }}/manage">← Back to Event Management</a>
+</div>
+
+<div class="project-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px;">
+  <div>
+    <div class="eyebrow">Judging Engine &amp; Normalization</div>
+    <h1 style="margin: 8px 0 12px;">{{ event.name }} Results</h1>
+    <p class="intro">Defensible judge-wise Z-score calibration, raw score validation, and organizer audits.</p>
+  </div>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <a href="/events/{{ event.id }}/export/judging.csv{% if selected_cohort %}?cohort_id={{ selected_cohort.cohort_id }}{% endif %}{% if selected_snapshot %}&amp;snapshot_id={{ selected_snapshot.id }}{% endif %}" class="btn btn-primary btn-sm">
+      📥 Export Judging CSV
+    </a>
+    <div style="position: relative; display: inline-block;">
+      <a href="/events/{{ event.id }}/export/reviews.csv" class="btn btn-secondary btn-sm">Export Reviews</a>
+      <a href="/events/{{ event.id }}/export/assignments.csv" class="btn btn-secondary btn-sm">Assignments</a>
+      <a href="/events/{{ event.id }}/export/judges-calibration.csv" class="btn btn-secondary btn-sm">Judges Calibration</a>
+      <a href="/events/{{ event.id }}/export/teams.csv" class="btn btn-secondary btn-sm">Teams</a>
+      <a href="/events/{{ event.id }}/export/projects.csv" class="btn btn-secondary btn-sm">Projects</a>
+    </div>
+  </div>
+</div>
+
+{% if success_msg %}
+  <div class="alert alert-success">{{ success_msg }}</div>
+{% endif %}
+{% if error_msg %}
+  <div class="alert alert-danger">{{ error_msg }}</div>
+{% endif %}
+
+<!-- Snapshots & Staleness Header -->
+<div class="card" style="margin-bottom: 24px; background: var(--bg-surface, #ffffff); border-left: 4px solid var(--accent, #4f46e5);">
+  <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+    <div>
+      <div style="font-size: 13px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px;">
+        Snapshot &amp; Reproducibility State
+      </div>
+      <div style="font-size: 16px; font-weight: 700; margin-top: 4px;">
+        {% if selected_snapshot %}
+          Viewing Immutable Snapshot: <code>{{ selected_snapshot.id }}</code>
+        {% else %}
+          Viewing Live Database Results
+        {% endif %}
+      </div>
+      <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+        {% if selected_snapshot %}
+          Captured {{ selected_snapshot.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') }} | Method: {{ selected_snapshot.method }}
+          {% if staleness_info.is_stale %}
+            <span class="status-badge status-draft" style="margin-left: 8px; font-weight: 600;">
+              ⚠️ Stale ({{ staleness_info.stale_reasons|join('; ') }})
+            </span>
+          {% else %}
+            <span class="status-badge status-submitted" style="margin-left: 8px; font-weight: 600;">
+              ✓ Synchronized with live database
+            </span>
+          {% endif %}
+        {% else %}
+          Calculated in real-time against current submitted projects and finalized reviews. Target: {{ event.target_reviews_per_project }} reviews/project.
+        {% endif %}
+      </div>
+    </div>
+    
+    <div style="display: flex; gap: 12px; align-items: center;">
+      <!-- Snapshot Selector -->
+      {% if snapshots %}
+        <form method="GET" action="/events/{{ event.id }}/manage/results" style="display: flex; gap: 8px; align-items: center;">
+          {% if selected_cohort %}
+            <input type="hidden" name="cohort_id" value="{{ selected_cohort.cohort_id }}">
+          {% endif %}
+          <select name="snapshot_id" onchange="this.form.submit()" style="font-size: 13px; padding: 6px 10px; border-radius: 6px;">
+            <option value="">-- Live Database Results --</option>
+            {% for s in snapshots %}
+              <option value="{{ s.id }}" {% if selected_snapshot and selected_snapshot.id == s.id %}selected{% endif %}>
+                Snapshot: {{ s.created_at.strftime('%b %d %H:%M') }} ({{ s.id[-8:] }})
+              </option>
+            {% endfor %}
+          </select>
+        </form>
+      {% endif %}
+
+      <!-- Create Snapshot Button -->
+      <form method="POST" action="/events/{{ event.id }}/manage/results/snapshots">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if selected_cohort and selected_cohort.track_id %}
+          <input type="hidden" name="track_id" value="{{ selected_cohort.track_id }}">
+        {% endif %}
+        <button type="submit" class="btn btn-secondary btn-sm" title="Capture and freeze an immutable snapshot of current results">
+          📸 Take Snapshot
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Cohort Selector Tabs -->
+<div style="margin-bottom: 20px; border-bottom: 2px solid var(--border-color, #e5e7eb); display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px;">
+  {% for c in results_data.cohorts %}
+    <a href="/events/{{ event.id }}/manage/results?cohort_id={{ c.cohort_id }}{% if selected_snapshot %}&amp;snapshot_id={{ selected_snapshot.id }}{% endif %}"
+       class="btn btn-sm {% if selected_cohort and selected_cohort.cohort_id == c.cohort_id %}btn-primary{% else %}btn-secondary{% endif %}"
+       style="border-radius: 6px 6px 0 0; text-decoration: none; white-space: nowrap;">
+      {{ c.cohort_name }}
+      <span style="opacity: 0.8; font-size: 11px; margin-left: 4px;">({{ c.summary.total_projects }} projects)</span>
+    </a>
+  {% endfor %}
+</div>
+
+<!-- Graph Connectivity Alert -->
+{% if selected_cohort and selected_cohort.graph_connectivity %}
+  {% if not selected_cohort.graph_connectivity.is_connected %}
+    <div class="alert alert-danger" style="margin-bottom: 24px; border-left: 6px solid #ef4444;">
+      <h3 style="margin: 0 0 6px; font-size: 15px; color: #991b1b; display: flex; align-items: center; gap: 8px;">
+        <span>⚠️</span> Disconnected Evaluation Network Detected
+      </h3>
+      <p style="margin: 0 0 8px; font-size: 13.5px; color: #7f1d1d;">
+        {{ selected_cohort.graph_connectivity.warning }}
+      </p>
+      <div style="font-size: 12px; color: #991b1b; display: flex; gap: 16px; flex-wrap: wrap;">
+        {% for comp in selected_cohort.graph_connectivity.components %}
+          <div style="background: rgba(254, 226, 226, 0.7); padding: 4px 8px; border-radius: 4px;">
+            <strong>{{ comp.component_id }}:</strong> {{ comp.projects_count }} projects, {{ comp.judges_count }} usable judges
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  {% else %}
+    <div style="margin-bottom: 20px; font-size: 12.5px; color: var(--text-muted); display: flex; align-items: center; gap: 6px;">
+      <span style="color: #10b981; font-weight: bold;">✓</span>
+      <span>Connected Evaluation Network: All evaluated projects in this cohort are connected by overlapping usable judges.</span>
+    </div>
+  {% endif %}
+{% endif %}
+
+<!-- Rankings Table Card -->
+<div class="card" style="margin-bottom: 32px;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+    <div>
+      <h2 style="margin: 0 0 4px; font-size: 18px;">
+        {{ selected_cohort.cohort_name }} Rankings
+      </h2>
+      <div style="font-size: 13px; color: var(--text-muted);">
+        Rubric: <strong>{{ selected_cohort.rubric_name }}</strong> (v{{ selected_cohort.rubric_version }}) &bull; Target Coverage: <strong>{{ event.target_reviews_per_project }}</strong> reviews
+      </div>
+    </div>
+    <div style="font-size: 13px; color: var(--text-muted);">
+      {{ selected_cohort.summary.total_projects }} Projects &bull; {{ selected_cohort.summary.total_eligible_reviews }} Eligible Reviews &bull; {{ selected_cohort.summary.usable_judges_count }} Usable Judges
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 70px;">Rank</th>
+          <th>Project</th>
+          <th>Track</th>
+          <th>Team</th>
+          <th style="text-align: center;">Reviews (Usable / Target)</th>
+          <th style="text-align: right;">Normalized Index</th>
+          <th style="text-align: center;">Norm Rank</th>
+          <th style="text-align: right;">Raw Mean</th>
+          <th style="text-align: center;">Raw Rank</th>
+          <th>Status</th>
+          <th>Component</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in selected_cohort.projects %}
+          <tr {% if p.is_provisional %}style="background: rgba(254, 243, 199, 0.2);"{% endif %}>
+            <td>
+              {% if p.normalized_rank %}
+                <span style="font-size: 16px; font-weight: 800; color: var(--accent, #4f46e5);">#{{ p.normalized_rank }}</span>
+              {% elif p.raw_rank %}
+                <span style="font-size: 14px; font-weight: 600; color: var(--text-muted);">#{{ p.raw_rank }}</span>
+              {% else %}
+                <span style="color: var(--text-muted);">—</span>
+              {% endif %}
+            </td>
+            <td>
+              <a href="/projects/{{ p.project_id }}" style="font-weight: 600; text-decoration: none;">{{ p.title }}</a>
+              <div style="font-size: 11px; color: var(--text-muted); font-family: monospace;">{{ p.project_id }}</div>
+            </td>
+            <td>
+              {% if p.track_id %}
+                <span class="status-badge status-draft" style="font-size: 11px;">{{ p.track_id }}</span>
+              {% else %}
+                <span style="color: var(--text-muted); font-size: 12px;">General</span>
+              {% endif %}
+            </td>
+            <td style="font-size: 13px;">{{ p.team_name }}</td>
+            <td style="text-align: center;">
+              <strong>{{ p.usable_normalized_count }}</strong>
+              <span style="color: var(--text-muted);">/ {{ p.target_reviews }}</span>
+              <div style="font-size: 10px; color: var(--text-muted);">({{ p.completed_reviews }} total)</div>
+            </td>
+            <td style="text-align: right; font-family: monospace; font-size: 13.5px;">
+              {% if p.normalized_index is not none %}
+                <strong style="color: {% if p.normalized_index > 0 %}#047857{% elif p.normalized_index < 0 %}#b91c1c{% else %}var(--text-main){% endif %};">
+                  {{ "%+.4f"|format(p.normalized_index) }}
+                </strong>
+              {% else %}
+                <span style="color: var(--text-muted);">—</span>
+              {% endif %}
+            </td>
+            <td style="text-align: center; font-size: 13px;">
+              {{ p.normalized_rank if p.normalized_rank is not none else '—' }}
+            </td>
+            <td style="text-align: right; font-family: monospace; font-size: 13.5px;">
+              {% if p.raw_mean is not none %}
+                {{ "%.2f"|format(p.raw_mean) }}
+              {% else %}
+                <span style="color: var(--text-muted);">—</span>
+              {% endif %}
+            </td>
+            <td style="text-align: center; font-size: 13px;">
+              {{ p.raw_rank if p.raw_rank is not none else '—' }}
+            </td>
+            <td>
+              {% if p.is_provisional %}
+                <span class="status-badge status-draft" title="{{ p.provisional_reason }}" style="background: #fef3c7; color: #92400e; border: 1px solid #fde68a;">
+                  Provisional
+                </span>
+                <div style="font-size: 10px; color: #b45309; max-width: 140px; margin-top: 2px;">
+                  {{ p.provisional_reason }}
+                </div>
+              {% else %}
+                <span class="status-badge status-submitted" style="background: #d1fae5; color: #065f46;">
+                  Verified
+                </span>
+              {% endif %}
+            </td>
+            <td style="font-size: 11.5px; color: var(--text-muted);">
+              {{ p.component_id }}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Judge Calibration & Exclusion Grid -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px;">
+  <!-- Judge Calibration Table Card -->
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <h2 style="font-size: 16px; margin: 0;">Judge Calibration Statistics</h2>
+      <span style="font-size: 12px; color: var(--text-muted);">
+        Thresholds: N &ge; 3, &sigma; &gt; 1e-6
+      </span>
+    </div>
+    <p class="hint" style="margin-bottom: 12px;">
+      Judges with insufficient sample sizes or near-zero variance are excluded from normalized Z-scores, but their raw scores are fully retained.
+    </p>
+
+    <div class="table-responsive" style="max-height: 380px; overflow-y: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Judge</th>
+            <th style="text-align: center;">N</th>
+            <th style="text-align: right;">Mean (&mu;)</th>
+            <th style="text-align: right;">StdDev (&sigma;)</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for j in selected_cohort.judges %}
+            <tr>
+              <td>
+                <div style="font-weight: 600; font-size: 13px;">{{ j.name }}</div>
+                <div style="font-size: 11px; color: var(--text-muted); font-family: monospace;">{{ j.judge_id }}</div>
+              </td>
+              <td style="text-align: center; font-weight: 600;">{{ j.sample_count_N }}</td>
+              <td style="text-align: right; font-family: monospace; font-size: 12.5px;">
+                {{ "%.2f"|format(j.mean_score) if j.mean_score is not none else '—' }}
+              </td>
+              <td style="text-align: right; font-family: monospace; font-size: 12.5px;">
+                {{ "%.4f"|format(j.population_std_dev) if j.population_std_dev is not none else '—' }}
+              </td>
+              <td>
+                {% if j.is_usable %}
+                  <span class="status-badge status-submitted" style="font-size: 10px;">Usable</span>
+                {% else %}
+                  <span class="status-badge status-draft" style="font-size: 10px; background: #fee2e2; color: #991b1b;" title="{{ j.unusable_reason }}">
+                    Excluded
+                  </span>
+                  <div style="font-size: 9.5px; color: #b91c1c; margin-top: 2px;">
+                    {{ j.unusable_reason }}
+                  </div>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Excluded Reviews Table Card -->
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <h2 style="font-size: 16px; margin: 0;">Excluded Reviews ({{ results_data.excluded_reviews|length }})</h2>
+      <span style="font-size: 12px; color: var(--text-muted);">Shared Eligibility Policy</span>
+    </div>
+    <p class="hint" style="margin-bottom: 12px;">
+      Reviews excluded due to draft status, missing criteria, track mismatches, or conflicts of interest.
+    </p>
+
+    {% if results_data.excluded_reviews %}
+      <div class="table-responsive" style="max-height: 380px; overflow-y: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Judge</th>
+              <th>Project</th>
+              <th>Status</th>
+              <th>Exclusion Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for er in results_data.excluded_reviews %}
+              <tr>
+                <td>
+                  <div style="font-weight: 600; font-size: 12px;">{{ er.judge_name }}</div>
+                  <div style="font-size: 10px; color: var(--text-muted);">{{ er.judge_id }}</div>
+                </td>
+                <td>
+                  <div style="font-weight: 600; font-size: 12px;">{{ er.project_title }}</div>
+                  <div style="font-size: 10px; color: var(--text-muted);">{{ er.project_id }}</div>
+                </td>
+                <td>
+                  <span class="status-badge status-draft" style="font-size: 10px;">{{ er.status }}</span>
+                </td>
+                <td style="font-size: 11px; color: #b91c1c;">
+                  {{ er.reason }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div style="padding: 32px 16px; text-align: center; color: var(--text-muted); font-size: 13.5px;">
+        <div style="font-size: 24px; margin-bottom: 8px;">✓</div>
+        All submitted reviews in this event satisfy eligibility criteria.
+      </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -4,7 +4,7 @@
 base_url = "http://localhost:8080"
 
 [tiers]
-claimed = ["T1"]
+claimed = ["T1", "T2"]
 pitch = "HackForge: Build. Submit. Judge. Self-hosted hackathon submission and judging platform."
 
 [auth]
@@ -18,3 +18,4 @@ gallery = "/projects"
 submit  = "/events/evt_01/submit"
 judge_scores = "/events/evt_01/judges/jdg_01/scores"
 peer_scores  = "/events/evt_01/judges/jdg_01/scores"
+csv_export = "/events/evt_01/export/judging.csv"

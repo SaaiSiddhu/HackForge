@@ -548,15 +548,19 @@ async def organizer_batch_assignments(
 ):
     """Run deterministic batch assignment algorithm balancing workload and checking eligibility."""
     require_organizer(db, event_id, account)
+    event = get_event_or_404(db, event_id)
+    default_target = getattr(event, "target_reviews_per_project", 3)
 
     content_type = request.headers.get("content-type", "").lower()
     if "application/json" in content_type:
         payload = await request.json()
-        target_reviews = int(payload.get("target_reviews_per_project", 3))
+        raw_val = payload.get("target_reviews_per_project")
+        target_reviews = int(raw_val) if raw_val is not None else default_target
     else:
         form = await request.form()
         validate_csrf(request, csrf_token_form=form.get("csrf_token"))
-        target_reviews = int(form.get("target_reviews_per_project", 3))
+        raw_val = form.get("target_reviews_per_project")
+        target_reviews = int(raw_val) if raw_val else default_target
 
     try:
         result = run_batch_assignment(

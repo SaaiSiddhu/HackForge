@@ -92,8 +92,10 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 from .templating import templates, get_request_csrf_token
 from .routers.judging import router as judging_router
+from .routers.results import router as results_router
 
 app.include_router(judging_router)
+app.include_router(results_router)
 
 
 @app.middleware("http")
@@ -633,6 +635,7 @@ def manage_event_post(
     description: Annotated[str, Form()] = "",
     min_team_size: Annotated[int, Form()] = 1,
     max_team_size: Annotated[int, Form()] = 5,
+    target_reviews_per_project: Annotated[int, Form()] = 3,
     submissions_close: Annotated[str, Form()] = "",
     registration_open: Annotated[str, Form()] = "",
     registration_close: Annotated[str, Form()] = "",
@@ -668,6 +671,7 @@ def manage_event_post(
             description=description,
             min_team_size=min_team_size,
             max_team_size=max_team_size,
+            target_reviews_per_project=target_reviews_per_project,
             registration_open=reg_open_dt,
             registration_close=reg_close_dt,
             submissions_open=sub_open_dt,

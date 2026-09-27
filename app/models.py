@@ -62,6 +62,7 @@ class Event(Base):
     submissions_close: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     min_team_size: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     max_team_size: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    target_reviews_per_project: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     prizes: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)
     created_by_account_id: Mapped[Optional[str]] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True)
 
@@ -75,6 +76,7 @@ class Event(Base):
     rubrics: Mapped[list["Rubric"]] = relationship("Rubric", back_populates="event", cascade="all, delete-orphan")
     judge_invitations: Mapped[list["JudgeInvitation"]] = relationship("JudgeInvitation", back_populates="event", cascade="all, delete-orphan")
     judge_assignments: Mapped[list["JudgeAssignment"]] = relationship("JudgeAssignment", back_populates="event", cascade="all, delete-orphan")
+    results_snapshots: Mapped[list["EventResultsSnapshot"]] = relationship("EventResultsSnapshot", back_populates="event", cascade="all, delete-orphan")
 
     def is_submissions_open(self, now: Optional[datetime] = None) -> bool:
         """Check if event is currently open for submissions."""
@@ -393,3 +395,24 @@ class ReviewCriterionScore(Base):
         UniqueConstraint("judge_id", "project_id", "criterion_key", name="uq_review_criterion_scores_key"),
         Index("ix_review_criterion_scores_judge_proj", "judge_id", "project_id"),
     )
+
+
+class EventResultsSnapshot(Base):
+    __tablename__ = "event_results_snapshots"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    event_id: Mapped[str] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True, nullable=False)
+    created_by_account_id: Mapped[Optional[str]] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True)
+    method: Mapped[str] = mapped_column(String(100), default="zscore_v1", nullable=False)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    input_review_hashes: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    results_data: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    event: Mapped["Event"] = relationship("Event", back_populates="results_snapshots")
+    created_by: Mapped[Optional["Account"]] = relationship("Account")
+
+    __table_args__ = (
+        Index("ix_event_results_snapshots_created_at", "created_at"),
+    )
+
