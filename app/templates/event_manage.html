@@ -199,7 +199,7 @@
   <div class="alert alert-success" style="margin-bottom: 24px;">
     <strong>Judge Invitation Generated!</strong> Share this one-time link with the invited judge:
     <div style="margin-top: 8px;">
-      <input type="text" readonly value="{{ request.base_url }}events/{{ event.id }}/judges/invite/{{ invited_token }}" style="width: 100%; font-family: monospace; font-size: 13px;" onclick="this.select();">
+      <input type="text" readonly aria-label="Generated Judge Invitation Link" value="{{ request.base_url }}events/{{ event.id }}/judges/invite/{{ invited_token }}" style="width: 100%; font-family: monospace; font-size: 13px;" onclick="this.select();">
     </div>
   </div>
 {% endif %}
@@ -286,12 +286,14 @@
                 <td><code>{{ j.id }}</code></td>
                 <td>{{ j.account.name if j.account else (j.account_id or 'Unlinked') }}</td>
                 <td>
-                  {% if j.tracks %}
+                  {% if j.tracks and '*' in j.tracks %}
+                    <span class="status-badge status-submitted" style="font-size: 10px;">All Tracks (*)</span>
+                  {% elif j.tracks %}
                     {% for tid in j.tracks %}
                       <span class="status-badge status-draft" style="font-size: 10px;">{{ tid }}</span>
                     {% endfor %}
                   {% else %}
-                    <span style="color: var(--text-muted); font-size: 12px;">All Tracks</span>
+                    <span style="color: var(--text-muted); font-size: 12px;">No Tracks</span>
                   {% endif %}
                 </td>
               </tr>

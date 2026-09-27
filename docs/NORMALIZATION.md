@@ -7,7 +7,7 @@ HackForge implements a deterministic judge-wise Z-score calibration engine (`met
 ### Primary Comparable Cohorts vs. Diagnostic Cross-Track Pooling
 1. **Default Primary Cohorts — `(event_id, track_id, rubric_id)`**:
    - By default, HackForge partitions submitted projects and eligible reviews by `(event_id, track_id, rubric_id)`.
-   - In the official `evt_01` (" Frostbyte 2026") fixture, judges are restricted to 1–2 tracks (`judge.tracks`). Grouping by `(track_id, rubric_id)` produces 8 primary track cohorts (`trk_01:rb_evt_01_v1` through `trk_08:rb_evt_01_v1`), each of which forms a **single connected evaluation network** (`component_count = 1`, `is_connected = True`).
+   - In the official `evt_01` ("Sample Hack 2026") fixture, judges are restricted to 1–2 tracks (`judge.tracks`). Grouping by `(track_id, rubric_id)` produces 8 primary track cohorts (`trk_01:rb_evt_01_v1` through `trk_08:rb_evt_01_v1`), each of which forms a **single connected evaluation network** (`component_count = 1`, `is_connected = True`).
 2. **Explicit Diagnostic Option — Whole-Event Cross-Track Pooling (`track_id="all"` / `all:<rubric_id>`)**:
    - Organizers can explicitly select the `all:<rubric_id>` cohort (`is_diagnostic_pooling = True`) to pool a judge's evaluations across multiple tracks that share the same rubric version.
    - **Justification**: When a judge evaluates projects across 2 tracks (e.g., 2 projects in one track and 1 in another), within-track sample size may be $N_{j,\text{track}} < 3$, whereas pooling across tracks under the shared rubric yields $N_{j,\text{all}} \ge 3$.

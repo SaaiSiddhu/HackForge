@@ -1,0 +1,14 @@
+# Optional local development override for HackForge.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Mounts local source into /portal for live editing and optionally exposes PostgreSQL on localhost:5432.
+services:
+  db:
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+
+  app:
+    volumes:
+      - .:/portal
+      - uploads:/portal/uploads

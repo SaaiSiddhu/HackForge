@@ -43,6 +43,14 @@ from app.templating import get_request_csrf_token, templates
 router = APIRouter(tags=["judging"])
 
 
+def get_event_or_404(db: Session, event_id: str) -> Event:
+    """Fetch event by ID or raise 404."""
+    event = db.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Event '{event_id}' not found.")
+    return event
+
+
 def require_organizer(db: Session, event_id: str, account: Optional[Account]) -> Account:
     """Ensure the user is authenticated and authorized as organizer for event_id."""
     if not account:

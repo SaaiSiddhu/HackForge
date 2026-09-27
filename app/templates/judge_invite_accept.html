@@ -18,18 +18,18 @@
   {% endif %}
 
   {% if invitation and invitation.status == 'pending' %}
-    <p style="font-size: 15px; color: #334155; line-height: 1.5; margin-bottom: 20px;">
+    <p style="font-size: 15px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 20px;">
       You have been invited to serve as an official judge for <strong>{{ event.name }}</strong>.
     </p>
 
-    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
-      <div style="font-size: 13px; color: #64748b; margin-bottom: 4px;">Invited Recipient:</div>
-      <div style="font-size: 15px; font-weight: 600; color: #0f172a; margin-bottom: 12px;">{{ invitation.email }}</div>
+    <div style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+      <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 4px;">Invited Recipient:</div>
+      <div style="font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px;">{{ invitation.email }}</div>
 
-      <div style="font-size: 13px; color: #64748b; margin-bottom: 4px;">Assigned Evaluation Tracks:</div>
+      <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 4px;">Assigned Evaluation Tracks:</div>
       <div>
         {% for trk in tracks %}
-          <span class="badge" style="background: #e0f2fe; color: #0369a1; padding: 3px 8px; border-radius: 4px; font-size: 12px; margin-right: 6px;">{{ trk.name }}</span>
+          <span class="status-badge status-submitted" style="margin-right: 6px;">{{ trk.name }}</span>
         {% endfor %}
       </div>
     </div>

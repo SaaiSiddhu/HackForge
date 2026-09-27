@@ -1,8 +1,8 @@
 # Data Model
 
-This document outlines the implemented relational database schema for HackForge through Phase 3.
+This document outlines the implemented relational database schema for HackForge through Phase 5 (`T1` & `T2` release).
 
-The schema is managed via Alembic migrations (`0001_foundation.py`, `0002_add_indexes.py`, `0003_phase2_core_workflows.py`, and `0004_phase3_judging.py`) and backed by PostgreSQL 17.
+The schema is managed via Alembic migrations (`0001_foundation.py`, `0002_add_indexes.py`, `0003_phase2_core_workflows.py`, `0004_phase3_judging.py`, and `0005_phase4_normalization_and_results.py`) and backed by PostgreSQL 17.
 
 ---
 
@@ -188,7 +188,7 @@ Cryptographic one-time invitations for prospective judges.
 - `email` (VARCHAR(320), INDEX): Normalized recipient email address.
 - `token_hash` (VARCHAR(64), UNIQUE, INDEX): SHA-256 hash of the 256-bit URL-safe invitation token.
 - `status` (VARCHAR(50), default "pending"): `"pending"`, `"accepted"`, `"revoked"`, `"expired"`.
-- `tracks` (JSON, nullable): Restricted track IDs list (`null` or `[]` denotes all tracks).
+- `tracks` (JSON, nullable): Permitted track IDs list (`["*"]` explicitly permits all tracks; explicit track IDs permit only those tracks; `[]` or `null` on `Judge.tracks` permits no tracks).
 - `expires_at` (TIMESTAMPTZ, UTC): Expiration deadline (default 7 days).
 - `created_at` (TIMESTAMPTZ, UTC)
 - `created_by_account_id` (VARCHAR(100), FK -> `accounts.id`, nullable)
@@ -221,4 +221,17 @@ Track restriction permissions for judges.
 - `event_id` (VARCHAR(100), PK, FK -> `events.id`, ON DELETE CASCADE)
 - `judge_id` (VARCHAR(100), PK, FK -> `judges.id`, ON DELETE CASCADE)
 - `track_id` (VARCHAR(100), PK, FK -> `tracks.id`, ON DELETE CASCADE)
+
+### 15. `results_snapshots` (Phase 4/5 Migration `0005`)
+Immutable organizer results snapshots with self-contained v2 canonical calculation manifests.
+- `id` (VARCHAR(100), PK): Snapshot identifier (e.g. `snp_evt_01_...`).
+- `event_id` (VARCHAR(100), FK -> `events.id`, ON DELETE CASCADE, INDEX): Associated hackathon event (note: `events.target_reviews_per_project` INT default `3` was also added in migration `0005`).
+- `rubric_id` (VARCHAR(100), FK -> `rubrics.id`, ON DELETE SET NULL, nullable): Active rubric at snapshot time.
+- `created_by_account_id` (VARCHAR(100), FK -> `accounts.id`, ON DELETE SET NULL, nullable): Organizer who captured the snapshot.
+- `created_at` (TIMESTAMPTZ, UTC): Snapshot creation timestamp.
+- `method` (VARCHAR(50), default `"zscore_v1"`): Normalization algorithm identifier.
+- `parameters` (JSON): Algorithm parameters (`min_sample`, `epsilon`, `target_reviews_per_project`, `cohort_policy`).
+- `results_data` (JSON): Complete computed cohort rankings, judge calibration statistics, connectivity components, and excluded review diagnostics.
+- `input_review_hashes` (JSON): Stores `manifest_version = 2`, `state_fingerprint` (SHA-256), `reviews` hash map, and the complete self-contained `manifest` captured under `REPEATABLE READ` isolation.
+
 

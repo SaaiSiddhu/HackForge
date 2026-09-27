@@ -160,11 +160,12 @@ def organizer_results_view(
         )
 
     return templates.TemplateResponse(
-        "event_results.html",
-        {
-            "request": request,
+        request=request,
+        name="event_results.html",
+        context={
             "event": event,
             "account": account,
+            "current_account": account,
             "results_data": results_data,
             "selected_cohort": selected_cohort,
             "selected_snapshot": selected_snapshot,

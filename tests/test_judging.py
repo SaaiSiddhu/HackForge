@@ -1113,3 +1113,33 @@ def test_dual_role_organizer_judge_access_restrictions(judging_env):
         judge_resp = client.get(f"/events/{event.id}/judge")
         assert judge_resp.status_code == 200
         assert "Assigned Projects" in judge_resp.text
+
+
+def test_organizer_batch_assignment_http_endpoint(judging_env):
+    """Verify POST /events/{event_id}/manage/assignments/batch succeeds for JSON and HTML form requests."""
+    engine = judging_env["engine"]
+    client = judging_env["client"]
+    with Session(engine) as db:
+        org = create_account(db, "org_batch_http@example.com", "Password123!", "Org Batch HTTP")
+        j_acc = create_account(db, "j_batch_http@example.com", "Password123!", "Judge Batch HTTP")
+        p_acc = create_account(db, "p_batch_http@example.com", "Password123!", "Participant Batch HTTP")
+        event = make_event(db, "evt_batch_http", "Batch HTTP Event", org)
+        track = Track(id="trk_batch_http", event_id=event.id, name="Batch HTTP Track")
+        db.add(track)
+        db.flush()
+
+        make_judge(db, "jdg_batch_http", event.id, "Judge HTTP", "j_batch_http@example.com", account_id=j_acc.id, tracks=["trk_batch_http"])
+        tm = create_team(db, event.id, "Team Batch HTTP", p_acc)
+        make_project(db, "prj_batch_http", event.id, tm.id, track.id, "Project Batch HTTP")
+        db.commit()
+
+        csrf = login_user(client, "org_batch_http@example.com", "Password123!")
+
+        resp = client.post(
+            f"/events/{event.id}/manage/assignments/batch",
+            data={"csrf_token": csrf, "target_reviews_per_project": "1"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == f"/events/{event.id}/manage?tab=assignments"
+

@@ -51,24 +51,24 @@
     <input type="hidden" name="expected_version" value="{{ review.version if review else 0 }}">
     <input type="hidden" name="rubric_id" value="{{ rubric.id }}">
 
-    <h2 style="font-size: 18px; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+    <h2 style="font-size: 18px; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
       Rubric Criteria (Weighted Normalized Scale)
     </h2>
 
     {% for crit in rubric.criteria %}
-      <div class="form-group" style="margin-bottom: 24px; padding: 16px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+      <div class="form-group" style="margin-bottom: 24px; padding: 16px; background: var(--bg-surface); border-radius: 8px; border: 1px solid var(--border-color);">
         <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
-          <label for="criterion_{{ crit.key }}" style="font-size: 15px; font-weight: 700; color: #0f172a;">
+          <label for="criterion_{{ crit.key }}" style="font-size: 15px; font-weight: 700; color: var(--text-primary);">
             {{ crit.name }}
           </label>
-          <div style="font-size: 12px; color: #64748b;">
-            <span class="badge" style="background: #e0f2fe; color: #0284c7; padding: 2px 6px; border-radius: 4px; font-weight: 600;">Weight: {{ crit.weight }}</span>
+          <div style="font-size: 12px; color: var(--text-muted);">
+            <span class="status-badge status-submitted">Weight: {{ crit.weight }}</span>
             <span style="margin-left: 6px;">Allowed: {{ crit.min_score }} – {{ crit.max_score }}</span>
           </div>
         </div>
 
         {% if crit.description %}
-          <p style="font-size: 13px; color: #475569; margin: 4px 0 10px;">{{ crit.description }}</p>
+          <p style="font-size: 13px; color: var(--text-secondary); margin: 4px 0 10px;">{{ crit.description }}</p>
         {% endif %}
 
         <div style="max-width: 200px;">
@@ -80,7 +80,7 @@
             min="{{ crit.min_score }}"
             max="{{ crit.max_score }}"
             value="{{ existing_scores.get(crit.key, '') }}"
-            style="width: 100%; padding: 8px 12px; font-size: 15px; font-weight: 600; border-radius: 6px; border: 1px solid #cbd5e1;"
+            style="width: 100%; padding: 8px 12px; font-size: 15px; font-weight: 600; border-radius: 6px; border: 1px solid var(--border-input);"
             placeholder="{{ crit.min_score }} - {{ crit.max_score }}"
           >
         </div>
@@ -95,7 +95,7 @@
         id="comment"
         name="comment"
         rows="4"
-        style="width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-family: inherit; font-size: 14px;"
+        style="width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--border-input); font-family: inherit; font-size: 14px;"
         placeholder="Constructive feedback, technical observations, and scoring rationale..."
       >{{ review.comment if review else '' }}</textarea>
     </div>

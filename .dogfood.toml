@@ -1,4 +1,4 @@
-# DOGFOOD 2026 Configuration for HackForge (Phase 2 T1 Workflows)
+# DOGFOOD 2026 Configuration for HackForge (T1 & T2 Verified Release)
 
 [portal]
 base_url = "http://localhost:8080"

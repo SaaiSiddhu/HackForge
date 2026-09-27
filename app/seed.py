@@ -420,7 +420,11 @@ def seed_demo_accounts_and_event(session: Session) -> dict[str, int]:
             ))
             stats["sessions_inserted"] += 1
         else:
-            sess.expires_at = future_expire
+            exp = sess.expires_at
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if exp < now:
+                sess.expires_at = future_expire
 
     # 2. Open Demo Event (Open for live testing and submissions)
     open_evt_id = "evt_open_demo"
@@ -523,12 +527,12 @@ def seed_demo_accounts_and_event(session: Session) -> dict[str, int]:
             joined_at=now,
         ))
 
-    # 5. Link demo judges to jdg_01 and jdg_02 in evt_01
+    # 5. Link demo judges to jdg_01 and jdg_02 in evt_01 only if not already linked
     j1 = session.get(Judge, "jdg_01")
-    if j1:
+    if j1 and not j1.account_id:
         j1.account_id = "acc_jdg_a_demo"
     j2 = session.get(Judge, "jdg_02")
-    if j2:
+    if j2 and not j2.account_id:
         j2.account_id = "acc_jdg_b_demo"
 
     # 6. Default rubric for open demo event
@@ -586,10 +590,25 @@ def main():
     )
     args = parser.parse_args()
 
+    settings = get_settings()
+    if not settings.seed_fixtures and args.fixtures is None and not args.reset:
+        print("HackForge: SEED_FIXTURES is false; skipping startup fixture seeding.")
+        return
+
     with SessionLocal() as session:
         with session.begin():
             stats = seed(session, path=args.fixtures, reset=args.reset, seed_demo=True)
     print(f"HackForge: official fixtures loaded successfully. Stats: {stats}")
+    demo_enabled = (
+        getattr(settings, "enable_demo_provisioning", False)
+        or os.environ.get("ENABLE_DEMO_PROVISIONING", "").lower() in ("true", "1", "yes")
+    )
+    if demo_enabled:
+        print("seeded. test logins (local demo scope, password: Password123!):")
+        print("  organizer    Authorization: Bearer org_demo    (organizer@hackforge.local / Password123!)")
+        print("  judge_a      Authorization: Bearer jdg_a_demo  (judge_a@hackforge.local / Password123!)")
+        print("  judge_b      Authorization: Bearer jdg_b_demo  (judge_b@hackforge.local / Password123!)")
+        print("  participant  Authorization: Bearer prt_demo    (participant@hackforge.local / Password123!)")
 
 
 if __name__ == "__main__":

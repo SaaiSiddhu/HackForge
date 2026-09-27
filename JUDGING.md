@@ -89,6 +89,8 @@ Available exclusively to authorized non-judge event organizers (`check_results_a
 
 ## 5. Verification & Test Summary
 
-- **Pytest Suite**: **99 passing tests** (`0 failed, 0 skipped`) across 15 test modules, including isolated PostgreSQL concurrency and `REPEATABLE READ` snapshot isolation tests on `hackforge_test`.
+- **Pytest Suite**: **100 passing tests** (`0 failed, 0 skipped`) across 15 test modules, including isolated PostgreSQL concurrency (`SELECT ... FOR UPDATE`) and `REPEATABLE READ` snapshot isolation tests on `hackforge_test`.
 - **Official Acceptance Checker**: `python3 run.py .dogfood.toml` $\to$ **Exit code 0 (`claimed T1 T2, verified T1 T2`)**.
-- **Browser & Offline Verification Status**: **NOT VERIFIED** (verified via Starlette `TestClient` HTTP tests; real headless browser and network-isolated offline execution were not run in this environment).
+- **Clean-Clone & Migration Upgrade Verification**: **PASS** — Verified from a clean `git checkout-index` export in an isolated Compose project (`hackforge-clean`) with fresh volumes, non-root `uid=1000(portal)` uploads, container restart persistence, repeated seed idempotence, and step-by-step migration upgrade `0001 -> 0002 -> 0003 -> 0004 -> 0005`.
+- **Offline Runtime Verification**: **PASS** — Verified in an air-gapped Docker bridge network (`internal: true`, `pull_policy: never`) with outbound TCP/DNS blocked (`Network is unreachable`). All 7 capabilities (readiness, gallery/CSS, auth, draft/PNG upload, batch assignment/scoring, results/snapshots, and all 6 CSV exports) succeeded offline.
+- **Real Browser Verification**: **PASS** — Verified via headless Google Chrome (`Chrome/154.0.8037.57`) over Chrome DevTools Protocol across all 14 user journeys, with `0` horizontal overflow issues at `1280x800` desktop and `375x812` mobile viewports, `0` unlabeled form controls, and verified `:focus-visible` keyboard navigation. See [`docs/PHASE-5-RELEASE-VERIFICATION.md`](./docs/PHASE-5-RELEASE-VERIFICATION.md).

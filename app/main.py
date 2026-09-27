@@ -187,6 +187,7 @@ def readiness():
 
 
 @app.get("/health", summary="Health check (readiness alias)")
+@app.get("/healthz", include_in_schema=False)
 def health():
     """Backward-compatible health endpoint checking database availability."""
     return readiness()

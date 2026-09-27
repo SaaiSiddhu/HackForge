@@ -77,7 +77,7 @@
           {% if selected_cohort %}
             <input type="hidden" name="cohort_id" value="{{ selected_cohort.cohort_id }}">
           {% endif %}
-          <select name="snapshot_id" onchange="this.form.submit()" style="font-size: 13px; padding: 6px 10px; border-radius: 6px;">
+          <select id="snapshot_id" name="snapshot_id" aria-label="Select Results Snapshot" onchange="this.form.submit()" style="font-size: 13px; padding: 6px 10px; border-radius: 6px;">
             <option value="">-- Live Database Results --</option>
             {% for s in snapshots %}
               <option value="{{ s.id }}" {% if selected_snapshot and selected_snapshot.id == s.id %}selected{% endif %}>
@@ -112,7 +112,7 @@
 </div>
 
 {% if selected_cohort and selected_cohort.is_diagnostic_pooling %}
-  <div class="alert" style="margin-bottom: 16px; background: #eff6ff; border-left: 5px solid #3b82f6; color: #1e3a8a; font-size: 13px;">
+  <div class="alert alert-info" style="margin-bottom: 16px; border-left: 5px solid #3b82f6; font-size: 13px;">
     <strong>🔬 Diagnostic Cross-Track Pooling Mode:</strong> {{ selected_cohort.diagnostic_note }}
   </div>
 {% endif %}
@@ -121,15 +121,15 @@
 {% if selected_cohort and selected_cohort.graph_connectivity %}
   {% if not selected_cohort.graph_connectivity.is_connected %}
     <div class="alert alert-danger" style="margin-bottom: 24px; border-left: 6px solid #ef4444;">
-      <h3 style="margin: 0 0 6px; font-size: 15px; color: #991b1b; display: flex; align-items: center; gap: 8px;">
+      <h3 style="margin: 0 0 6px; font-size: 15px; color: #fca5a5; display: flex; align-items: center; gap: 8px;">
         <span>⚠️</span> Disconnected Evaluation Network Detected (Global Normalized Rank Withheld)
       </h3>
-      <p style="margin: 0 0 8px; font-size: 13.5px; color: #7f1d1d;">
+      <p style="margin: 0 0 8px; font-size: 13.5px; color: #fecaca;">
         {{ selected_cohort.graph_connectivity.warning }}
       </p>
-      <div style="font-size: 12px; color: #991b1b; display: flex; gap: 16px; flex-wrap: wrap;">
+      <div style="font-size: 12px; color: #fca5a5; display: flex; gap: 16px; flex-wrap: wrap;">
         {% for comp in selected_cohort.graph_connectivity.components %}
-          <div style="background: rgba(254, 226, 226, 0.7); padding: 4px 8px; border-radius: 4px;">
+          <div style="background: rgba(127, 29, 29, 0.45); padding: 4px 8px; border-radius: 4px;">
             <strong>{{ comp.component_id }}:</strong> {{ comp.projects_count }} projects, {{ comp.judges_count }} usable judges
           </div>
         {% endfor %}

@@ -6,13 +6,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /portal
 
 COPY requirements.lock .
-RUN pip install --no-cache-dir -r requirements.lock
+RUN pip install --no-cache-dir --no-deps -r requirements.lock
 
 RUN useradd --create-home --shell /bin/bash portal && \
     mkdir -p /portal/uploads && \
     chown -R portal:portal /portal
 
 COPY --chown=portal:portal . .
+RUN mkdir -p /portal/uploads && chown -R portal:portal /portal/uploads
 
 USER portal
 EXPOSE 8080
