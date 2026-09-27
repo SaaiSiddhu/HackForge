@@ -1,90 +1,80 @@
 # Judging Engine & Evaluation System
 
-## Current Status: Phase 4 Complete (T1 and T2 Verified)
+## Current Status: Phase 4 Results-Integrity Repair & Release Verification Complete (T1 and T2 Verified)
 
-HackForge implements complete end-to-end judging, weighted rubrics, deterministic batch assignments, private evaluations, OCC row-level concurrency locking, dual-role access control, organizer progress tracking, defensible judge-wise Z-score normalization, reproducible snapshots, and RFC 4180 compliant CSV exports.
+HackForge implements end-to-end judging, weighted rubrics, deterministic batch assignments, private evaluations, OCC row-level concurrency locking, dual-role access control, organizer progress tracking, defensible judge-wise Z-score normalization across comparable track/rubric cohorts, consistent-read canonical v2 manifest snapshots, comprehensive staleness detection, and RFC 4180 compliant CSV exports.
 
 > **Official Acceptance Status**: `.dogfood.toml` claims `["T1", "T2"]`. Unmodified official checker `python3 run.py .dogfood.toml` verifies both T1 and T2 with exit code 0 (`claimed T1 T2, verified T1 T2`).
 > Voting, certificates, webhooks, and pairwise judging remain strictly out of scope.
 
 ---
 
-## 1. Score Normalization & Statistical Engine
+## 1. Score Normalization, Cohort Policy & Statistical Engine
 
-### A. Mathematical Formulation
+### A. Comparable Cohorts vs. Diagnostic Cross-Track Pooling
+- **Default Primary Cohorts `(event_id, track_id, rubric_id)`**:
+  - Results calculation (`app/scoring_services.py:calculate_event_results`) defaults to comparable `(track_id, rubric_id)` cohorts (`cohorts[0..7]` in `evt_01`).
+  - Within each track cohort of `evt_01`, all evaluated projects and usable judges form a single connected component (`is_connected = True`).
+- **Explicit Diagnostic Cross-Track Pooling (`track_id="all"` / `all:<rubric_id>`)**:
+  - Whole-event cross-track pooling (`is_diagnostic_pooling = True`) is available as an explicit diagnostic option (`?track_id=all` or `?cohort_id=all:rb_evt_01_v1`).
+  - `track_id="all"` is explicitly handled in `calculate_results_from_manifest` so it includes all submitted projects and reviews across tracks rather than filtering for a literal track named `"all"`.
+- **Disconnected Component Ranking Policy**:
+  - A breadth-first search (`analyze_bipartite_connectivity`) partitions the project-judge evaluation network into connected components.
+  - When `component_count <= 1` (`is_connected = True`), projects receive both `normalized_rank` and `component_normalized_rank`.
+  - When `component_count > 1` (`is_connected = False`, such as the 2 disconnected components in `all:rb_evt_01_v1`), HackForge **withholds any unqualified global `normalized_rank` (`normalized_rank = None`)** and reports only component-local ranks (`component_normalized_rank`: `Component 1 #1..#20`, `Component 2 #1..#21`) across the UI, JSON API, snapshots, and `judging.csv`.
+
+### B. Mathematical Formulation & Input Validation
 - **Raw Score Recalculation**:
-  Raw scores are dynamically validated and recalculated from source criterion scores and active rubric weights:
   $$\text{Raw Score} = 100 \times \frac{\sum_{i=1}^C w_i \cdot \frac{s_i - \min_i}{\max_i - \min_i}}{\sum_{i=1}^C w_i}$$
-  Unrounded float precision is maintained for all rankings and intermediate calculations. Rounding occurs only at presentation time.
-- **Judge Cohort Statistics & Population Standard Deviation**:
-  For each judge $j$ with evaluated cohort scores $S_j = [S_{j,1}, \dots, S_{j, N_j}]$:
-  $$\mu_j = \frac{1}{N_j} \sum_{k=1}^{N_j} S_{j,k}$$
-  $$\sigma_j = \sqrt{\frac{1}{N_j} \sum_{k=1}^{N_j} (S_{j,k} - \mu_j)^2}$$
-  Note: $\sigma_j$ is the **population** standard deviation (matching `statistics.pstdev`).
-- **Guardrails Against Sparse Samples & Zero Variance**:
-  - Sample size threshold: $N_{\min} \ge 3$. Judges with $N_j < 3$ are excluded from normalization (`"insufficient_samples"`).
-  - Variance threshold: $\epsilon = 1\text{e-}6$. Judges with $\sigma_j \le \epsilon$ are excluded from normalization (`"near_zero_variance"`).
-  - Raw scores from unusable judges are preserved in raw aggregates and audit logs.
-- **Z-Score Calibration & Project Normalized Index**:
-  For usable judges:
-  $$z_{j,k} = \frac{S_{j,k} - \mu_j}{\sigma_j}$$
-  Project normalized index is the arithmetic mean of usable judge Z-scores:
-  $$\text{Normalized Index}_k = \frac{1}{|Z_k|} \sum_{z \in Z_k} z$$
-  - If $|Z_k| < \text{event.target\_reviews\_per\_project}$, project is marked **Provisional**.
-  - If $|Z_k| = 0$, normalized index is left blank (`None` / empty string in CSV), **never fabricated as zero**.
-- **Bipartite Evaluation Graph Connectivity**:
-  A breadth-first search (BFS) partitions the project-judge evaluation graph into connected components. If $> 1$ components exist, cross-component normalization is uncalibrated, and a prominent warning is displayed.
+  Full IEEE 754 float precision is maintained for all intermediate calculations and rankings; rounding occurs only at presentation/export time.
+- **Strict Input Validation (No `1.0` Fallback)**:
+  - Both `calculate_raw_review_score` (`app/scoring_services.py`) and `calculate_raw_score` (`app/judging_services.py`) reject zero or negative criterion score ranges ($\max_i \le \min_i$), negative or non-finite weights, non-positive total weight, unknown criterion keys, boolean values, `NaN`/`±inf` scores, and out-of-range scores.
+  - `validate_normalization_parameters` enforces integer `min_sample >= 1`, finite `epsilon > 0.0`, and supported `method` (`"zscore_v1"`).
+- **Judge Cohort Statistics & Guardrails**:
+  - Uses population standard deviation $\sigma_j = \text{pstdev}(S_j)$.
+  - Excludes judges with $N_j < \text{min\_sample}$ (`3`) or $\sigma_j \le \epsilon$ (`1e-6`) from Z-score normalization while preserving their eligible raw scores in `raw_mean`.
+  - Projects with `usable_normalized_count < event.target_reviews_per_project` are marked `is_provisional = True`. Projects with `0` usable normalized evaluations have `normalized_index = None` (rendered as `""` in CSV, never fabricated as `0`).
 
 ---
 
-## 2. Shared Review Eligibility Policy
+## 2. Unified Review Eligibility & Revocation Policy
 
-Both results calculation and all CSV exports enforce an identical, shared eligibility policy:
-1. **Draft vs Finalized**: Only reviews with `status == "finalized"` count toward project scores and rankings. Draft reviews are excluded (`"draft_review"`).
-2. **Removed Assignments**: Finalized reviews whose assignment was subsequently removed remain eligible historical evaluations unless invalidated by conflict or track revocation.
-3. **Conflicts of Interest**: A judge who is a member of the project's team (`judge.account_id` in team memberships) is immediately disqualified (`"conflict_of_interest"`).
-4. **Project Lifecycle**: Projects with `status != "submitted"` (e.g. draft, withdrawn) are excluded (`"project_status_draft"`).
-5. **Criterion Integrity**: Every criterion in the bound rubric must have a finite score within $[\min_i, \max_i]$. Any missing or out-of-bounds score invalidates the review (`"incomplete_or_invalid_criteria_scores"`).
-6. **Rubric Binding**: Reviews reference specific rubric versions. If a bound rubric record is missing or inconsistent, calculation fails cleanly with an integrity error.
-7. **Track Restrictions**: A judge with track restrictions who reviews a project outside their authorized tracks is excluded (`"track_mismatch"`).
-
----
-
-## 3. Reproducible Organizer Results & Immutable Snapshots
-
-- **Web Dashboard**: `/events/{event_id}/manage/results` provides:
-  - Cohort selector (Whole Event or individual Tracks).
-  - Prominent bipartite graph connectivity warnings.
-  - Complete ranking table with normalized index, raw mean, coverage, and provisional indicators.
-  - Judge calibration statistics ($N_j$, $\mu_j$, $\sigma_j$, usability status).
-  - Excluded reviews table with explicit rejection reasons.
-- **OCC Snapshot Freeze**: `POST /events/{event_id}/manage/results/snapshots` captures:
-  - SHA-256 cryptographic hashes of all input review criteria and states.
-  - Complete calculated results data.
-  - Method and parameter tracking (`min_sample`, `epsilon`, `track_id`, `rubric_id`).
-- **Live Staleness Detection**: Inspecting a stored snapshot automatically compares current review criteria hashes against snapshot input signatures, flagging added, modified, or deleted reviews.
+`app/scoring_services.py:evaluate_review_eligibility` reuses the centralized permission helper `app/judging_services.py:is_judge_permitted_for_track`:
+1. **Track Permissions & Revocation**:
+   - `["*"]` explicitly permits all tracks.
+   - Explicit track IDs permit those tracks.
+   - `[]` or `None` permits **no tracks**.
+   - **Revocation Policy**: Revoking a judge's track permission invalidates historical reviews for unauthorized tracks across live results, diagnostics (`excluded_reviews`), and live CSV exports (`ineligibility_reason = "track_mismatch"`). Historical snapshots retain the eligibility state captured in their canonical v2 manifest at snapshot time.
+2. **Draft vs Finalized**: Only `status == "finalized"` reviews are eligible (`draft_review` excluded).
+3. **Project Lifecycle**: Only `status == "submitted"` projects are eligible (`project_status_<status>` excluded).
+4. **Conflicts of Interest**: Any judge whose `account_id` belongs to the project's `TeamMembership` is excluded (`conflict_of_interest`).
+5. **Historical Rubric Integrity & Criterion Completeness**: Missing rubrics (`missing_rubric`), invalid rubric weights/ranges, unknown criterion keys (`unknown_criterion_<key>`), non-finite scores (`non_finite_criterion_<key>`), missing scores (`missing_criterion_<key>`), or out-of-bounds scores (`out_of_bounds_criterion_<key>`) are explicitly rejected.
 
 ---
 
-## 4. Comprehensive Organizer CSV Exports
+## 3. Consistent-Read Canonical v2 Snapshots & Staleness Detection
 
-Available exclusively to authorized event organizers:
-1. `GET /events/{event_id}/export/judging.csv`: Normalized and raw rankings by cohort or snapshot.
-2. `GET /events/{event_id}/export/reviews.csv`: Detailed evaluation records with rubric versions and eligibility flags.
-3. `GET /events/{event_id}/export/assignments.csv`: Judge assignments with completion and review status.
-4. `GET /events/{event_id}/export/teams.csv`: Team rosters, captain IDs, and associated projects.
-5. `GET /events/{event_id}/export/projects.csv`: Submission metadata, submission timestamps, and coverage counts.
-6. `GET /events/{event_id}/export/judges-calibration.csv`: Sample counts, means, population standard deviations, and usability reasons.
-
-**Export Guarantees**:
-- **RFC 4180 Compliance**: Minimal quoting, CRLF (`\r\n`) line endings, clean multiline field handling.
-- **UTF-8 Encoding**: Standard `text/csv; charset=utf-8` responses.
-- **Formula Injection Defense**: Any cell value beginning with `=`, `+`, `-`, `@`, `\t`, or `\r` is escaped with a prepended single quote (`'`), while legitimate numeric negatives (e.g. `-1.2345`) remain pure numbers.
-- **No Zero Fabrication**: Missing or unavailable metrics (e.g. unreviewed projects, unusable judges) are rendered as empty strings `""`, never fabricated zeros.
+- **Consistent-Read Single-Pass Manifest (`capture_calculation_manifest`)**:
+  - On PostgreSQL, `create_results_snapshot` starts a clean transaction with `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` before reading any rows.
+  - All calculation inputs (event `target_reviews_per_project`, tracks, bound rubrics/criteria/weights/ranges/versions, teams & conflict-relevant memberships, judges & track permissions, assignments, all event projects & statuses/tracks, and reviews & criterion scores) are captured in one read pass into a self-contained v2 manifest (`manifest_version = 2`).
+  - `calculate_results_from_manifest(manifest)` computes `results_data` purely from this in-memory manifest with zero additional DB queries, guaranteeing consistency between stored provenance and output.
+  - `reproduce_snapshot_results(snapshot)` deterministically reproduces `snapshot.results_data` from `snapshot.input_review_hashes["manifest"]` even after live database records change.
+  - Pre-existing snapshots lacking a v2 manifest are preserved in the database and explicitly marked `is_legacy_unverifiable = True` (`provenance_status = "legacy_unverifiable"`).
+- **Comprehensive Staleness Detection (`check_snapshot_staleness`)**:
+  - Compares the stored canonical calculation state against live state across all calculation-affecting domains: normalization method/parameters, event `target_reviews_per_project`, rubric weights/ranges/versions, judge track permissions/account bindings, conflict-relevant team memberships, project status/track/team, and review additions/removals/status/rubric bindings/scores.
+  - Non-calculation changes (e.g., project summary/repo URL, judge display name, or unrelated events) do not mark a snapshot stale.
 
 ---
 
-## 5. Strict Authorization Matrix
+## 4. Comprehensive Organizer CSV Exports & Authorization Matrix
+
+Available exclusively to authorized non-judge event organizers (`check_results_authorization` and `_load_authorized_snapshot`):
+1. `GET /events/{event_id}/export/judging.csv`: Includes `component_id` and `component_normalized_rank`; withholds global `normalized_rank` (`""`) when the cohort graph is disconnected. Supports `?cohort_id=...`, `?track_id=...`, and `?snapshot_id=...`.
+2. `GET /events/{event_id}/export/reviews.csv`: Uses unified `evaluate_review_eligibility` and supports `?snapshot_id=...` to export historical review states from v2 snapshots.
+3. `GET /events/{event_id}/export/assignments.csv`: Judge assignments with completion status.
+4. `GET /events/{event_id}/export/teams.csv`: Team rosters and submitted project links.
+5. `GET /events/{event_id}/export/projects.csv`: Project metadata and assignment/review counts.
+6. `GET /events/{event_id}/export/judges-calibration.csv`: Cohort judge calibration statistics ($N_j, \mu_j, \sigma_j$, usability flags); supports `?snapshot_id=...`.
 
 | User Role | Judge Dashboard (`/judge`) | Manage Progress (`/manage/progress`) | Results & Snapshots (`/manage/results`) | CSV Exports (`/export/*.csv`) |
 | :--- | :---: | :---: | :---: | :---: |
@@ -95,18 +85,10 @@ Available exclusively to authorized event organizers:
 | **Organizer (Authorized)** | 403 / 200 | 200 | 200 | 200 |
 | **Cross-Event Organizer** | 403 | 403 | 403 | 403 |
 
-- **Snapshot Isolation**: Snapshot exports derive event ownership strictly from `snapshot.event_id`, preventing cross-event leakage even if a foreign `event_id` is supplied in the URL.
-
 ---
 
-## 6. Verification & Test Summary
+## 5. Verification & Test Summary
 
-- **Pytest Suite**: **96 passing tests** across 15 test modules:
-  - `tests/test_scoring.py`: 7 tests covering raw score math, eligibility edge cases, population std dev, near-zero variance guards, small sample guards, bipartite graph BFS, and snapshot staleness.
-  - `tests/test_exports.py`: 4 tests covering formula injection, RFC 4180 quoting, blank values, dual-role export blocking, and snapshot event ownership isolation.
-  - `tests/test_judging.py`: 17 tests covering invitations, rubric freezing, concurrency, and judge score isolation.
-  - `tests/test_postgres_integration.py`: 8 tests covering concurrent PostgreSQL transactions and row locking.
-- **Official Acceptance Checker**:
-  - `python3 run.py .dogfood.toml` $\to$ **Exit code 0 (`claimed T1 T2, verified T1 T2`)**.
-- **Browser Testing Status**: **NOT VERIFIED**.
-  - Headless browser automation tooling is not installed in this execution environment. All UI routes, CSRF token handling, and rendering have been verified via Starlette TestClient integration tests.
+- **Pytest Suite**: **99 passing tests** (`0 failed, 0 skipped`) across 15 test modules, including isolated PostgreSQL concurrency and `REPEATABLE READ` snapshot isolation tests on `hackforge_test`.
+- **Official Acceptance Checker**: `python3 run.py .dogfood.toml` $\to$ **Exit code 0 (`claimed T1 T2, verified T1 T2`)**.
+- **Browser & Offline Verification Status**: **NOT VERIFIED** (verified via Starlette `TestClient` HTTP tests; real headless browser and network-isolated offline execution were not run in this environment).

@@ -14,13 +14,13 @@
     <p class="intro">Defensible judge-wise Z-score calibration, raw score validation, and organizer audits.</p>
   </div>
   <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-    <a href="/events/{{ event.id }}/export/judging.csv{% if selected_cohort %}?cohort_id={{ selected_cohort.cohort_id }}{% endif %}{% if selected_snapshot %}&amp;snapshot_id={{ selected_snapshot.id }}{% endif %}" class="btn btn-primary btn-sm">
+    <a href="/events/{{ event.id }}/export/judging.csv{% if selected_cohort %}?cohort_id={{ selected_cohort.cohort_id }}{% endif %}{% if selected_snapshot %}{% if selected_cohort %}&amp;{% else %}?{% endif %}snapshot_id={{ selected_snapshot.id }}{% endif %}" class="btn btn-primary btn-sm">
       📥 Export Judging CSV
     </a>
     <div style="position: relative; display: inline-block;">
-      <a href="/events/{{ event.id }}/export/reviews.csv" class="btn btn-secondary btn-sm">Export Reviews</a>
+      <a href="/events/{{ event.id }}/export/reviews.csv{% if selected_snapshot %}?snapshot_id={{ selected_snapshot.id }}{% endif %}" class="btn btn-secondary btn-sm">Export Reviews</a>
       <a href="/events/{{ event.id }}/export/assignments.csv" class="btn btn-secondary btn-sm">Assignments</a>
-      <a href="/events/{{ event.id }}/export/judges-calibration.csv" class="btn btn-secondary btn-sm">Judges Calibration</a>
+      <a href="/events/{{ event.id }}/export/judges-calibration.csv{% if selected_snapshot %}?snapshot_id={{ selected_snapshot.id }}{% endif %}" class="btn btn-secondary btn-sm">Judges Calibration</a>
       <a href="/events/{{ event.id }}/export/teams.csv" class="btn btn-secondary btn-sm">Teams</a>
       <a href="/events/{{ event.id }}/export/projects.csv" class="btn btn-secondary btn-sm">Projects</a>
     </div>
@@ -51,13 +51,17 @@
       <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
         {% if selected_snapshot %}
           Captured {{ selected_snapshot.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') }} | Method: {{ selected_snapshot.method }}
-          {% if staleness_info.is_stale %}
+          {% if staleness_info.is_legacy_unverifiable %}
+            <span class="status-badge status-draft" style="margin-left: 8px; font-weight: 600;">
+              ⚠️ Legacy Snapshot (Unverifiable Manifest Provenance)
+            </span>
+          {% elif staleness_info.is_stale %}
             <span class="status-badge status-draft" style="margin-left: 8px; font-weight: 600;">
               ⚠️ Stale ({{ staleness_info.stale_reasons|join('; ') }})
             </span>
           {% else %}
             <span class="status-badge status-submitted" style="margin-left: 8px; font-weight: 600;">
-              ✓ Synchronized with live database
+              ✓ Synchronized with live database (Verified v2 Manifest)
             </span>
           {% endif %}
         {% else %}
@@ -87,9 +91,6 @@
       <!-- Create Snapshot Button -->
       <form method="POST" action="/events/{{ event.id }}/manage/results/snapshots">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        {% if selected_cohort and selected_cohort.track_id %}
-          <input type="hidden" name="track_id" value="{{ selected_cohort.track_id }}">
-        {% endif %}
         <button type="submit" class="btn btn-secondary btn-sm" title="Capture and freeze an immutable snapshot of current results">
           📸 Take Snapshot
         </button>
@@ -98,24 +99,30 @@
   </div>
 </div>
 
-<!-- Cohort Selector Tabs -->
-<div style="margin-bottom: 20px; border-bottom: 2px solid var(--border-color, #e5e7eb); display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px;">
+<!-- Cohort Selector Tabs (Comparable Track/Rubric Cohorts First, Diagnostic Cross-Track Pooling Last) -->
+<div style="margin-bottom: 20px; border-bottom: 2px solid var(--border-color, #e5e7eb); display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; align-items: center;">
   {% for c in results_data.cohorts %}
     <a href="/events/{{ event.id }}/manage/results?cohort_id={{ c.cohort_id }}{% if selected_snapshot %}&amp;snapshot_id={{ selected_snapshot.id }}{% endif %}"
        class="btn btn-sm {% if selected_cohort and selected_cohort.cohort_id == c.cohort_id %}btn-primary{% else %}btn-secondary{% endif %}"
-       style="border-radius: 6px 6px 0 0; text-decoration: none; white-space: nowrap;">
-      {{ c.cohort_name }}
+       style="border-radius: 6px 6px 0 0; text-decoration: none; white-space: nowrap; {% if c.is_diagnostic_pooling %}border-style: dashed;{% endif %}">
+      {% if c.is_diagnostic_pooling %}🔬 {% endif %}{{ c.cohort_name }}
       <span style="opacity: 0.8; font-size: 11px; margin-left: 4px;">({{ c.summary.total_projects }} projects)</span>
     </a>
   {% endfor %}
 </div>
+
+{% if selected_cohort and selected_cohort.is_diagnostic_pooling %}
+  <div class="alert" style="margin-bottom: 16px; background: #eff6ff; border-left: 5px solid #3b82f6; color: #1e3a8a; font-size: 13px;">
+    <strong>🔬 Diagnostic Cross-Track Pooling Mode:</strong> {{ selected_cohort.diagnostic_note }}
+  </div>
+{% endif %}
 
 <!-- Graph Connectivity Alert -->
 {% if selected_cohort and selected_cohort.graph_connectivity %}
   {% if not selected_cohort.graph_connectivity.is_connected %}
     <div class="alert alert-danger" style="margin-bottom: 24px; border-left: 6px solid #ef4444;">
       <h3 style="margin: 0 0 6px; font-size: 15px; color: #991b1b; display: flex; align-items: center; gap: 8px;">
-        <span>⚠️</span> Disconnected Evaluation Network Detected
+        <span>⚠️</span> Disconnected Evaluation Network Detected (Global Normalized Rank Withheld)
       </h3>
       <p style="margin: 0 0 8px; font-size: 13.5px; color: #7f1d1d;">
         {{ selected_cohort.graph_connectivity.warning }}
@@ -156,7 +163,7 @@
     <table>
       <thead>
         <tr>
-          <th style="width: 70px;">Rank</th>
+          <th style="width: 110px;">Rank</th>
           <th>Project</th>
           <th>Track</th>
           <th>Team</th>
@@ -173,10 +180,16 @@
         {% for p in selected_cohort.projects %}
           <tr {% if p.is_provisional %}style="background: rgba(254, 243, 199, 0.2);"{% endif %}>
             <td>
-              {% if p.normalized_rank %}
+              {% if p.normalized_rank is not none %}
                 <span style="font-size: 16px; font-weight: 800; color: var(--accent, #4f46e5);">#{{ p.normalized_rank }}</span>
-              {% elif p.raw_rank %}
-                <span style="font-size: 14px; font-weight: 600; color: var(--text-muted);">#{{ p.raw_rank }}</span>
+              {% elif p.component_normalized_rank is not none %}
+                <span style="font-size: 12.5px; font-weight: 700; color: #9a3412;" title="Component-local normalized rank (global rank withheld across disconnected components)">
+                  {{ p.component_id }} #{{ p.component_normalized_rank }}
+                </span>
+              {% elif p.raw_rank is not none %}
+                <span style="font-size: 13px; font-weight: 600; color: var(--text-muted);" title="Raw rank only (no usable normalized evaluations)">
+                  Raw #{{ p.raw_rank }}
+                </span>
               {% else %}
                 <span style="color: var(--text-muted);">—</span>
               {% endif %}
@@ -207,8 +220,16 @@
                 <span style="color: var(--text-muted);">—</span>
               {% endif %}
             </td>
-            <td style="text-align: center; font-size: 13px;">
-              {{ p.normalized_rank if p.normalized_rank is not none else '—' }}
+            <td style="text-align: center; font-size: 12.5px;">
+              {% if p.normalized_rank is not none %}
+                {{ p.normalized_rank }}
+              {% elif p.component_normalized_rank is not none %}
+                <span style="color: #9a3412;" title="Global normalized rank withheld due to disconnected components">
+                  {{ p.component_id }} #{{ p.component_normalized_rank }}
+                </span>
+              {% else %}
+                —
+              {% endif %}
             </td>
             <td style="text-align: right; font-family: monospace; font-size: 13.5px;">
               {% if p.raw_mean is not none %}

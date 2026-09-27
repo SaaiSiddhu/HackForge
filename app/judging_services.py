@@ -47,7 +47,7 @@ def get_account_judge_for_event(db: Session, event_id: str, account_id: str) -> 
     ).first()
 
 
-def is_judge_permitted_for_track(judge: Judge, track_id: str) -> bool:
+def is_judge_permitted_for_track(judge: Any, track_id: Optional[str]) -> bool:
     """Check if a judge is authorized to evaluate a project in track_id.
 
     Policy:
@@ -55,10 +55,16 @@ def is_judge_permitted_for_track(judge: Judge, track_id: str) -> bool:
     - If judge.tracks is non-empty, track_id must be in judge.tracks.
     - If judge.tracks is empty ([] or None), the judge has NO track permissions (e.g. revoked).
     """
-    tracks = judge.tracks or []
+    if not judge:
+        return False
+    raw_tracks = judge.get("tracks") if isinstance(judge, dict) else getattr(judge, "tracks", None)
+    tracks = raw_tracks or []
     if "*" in tracks:
         return True
+    if not track_id:
+        return False
     return track_id in tracks
+
 
 
 def is_account_event_organizer(db: Session, event_id: str, account_id: str) -> bool:
@@ -522,35 +528,69 @@ def create_or_update_event_rubric(
 def calculate_raw_score(rubric: Rubric, criterion_scores: dict[str, float]) -> Optional[float]:
     """Calculate raw review total: 100 * sum(weight * (score - min)/(max - min)) / sum(weights).
 
-    Rounded to 2 decimal places. Returns None if rubric has no weights or scores are empty.
+    Rounded to 2 decimal places. Returns None if criterion_scores is empty (e.g. unstarted draft).
+    Raises ValueError on invalid rubric weights/ranges, unknown criterion keys, or invalid scores.
     """
-    if not rubric or not rubric.criteria or not criterion_scores:
+    if not rubric or not rubric.criteria:
+        raise ValueError("Rubric has no criteria defined.")
+    if not criterion_scores:
         return None
+
+    crit_by_key = {}
+    rubric_total_weight = 0.0
+    for c in rubric.criteria:
+        if isinstance(c.weight, bool) or isinstance(c.min_score, bool) or isinstance(c.max_score, bool):
+            raise ValueError(f"Criterion '{c.key}' has invalid boolean weight or range.")
+        w = float(c.weight)
+        min_s = float(c.min_score)
+        max_s = float(c.max_score)
+        if not math.isfinite(w) or w < 0.0:
+            raise ValueError(f"Criterion '{c.key}' weight must be finite and non-negative.")
+        if not math.isfinite(min_s) or not math.isfinite(max_s) or max_s <= min_s:
+            raise ValueError(f"Criterion '{c.key}' must have finite min_score < max_score.")
+        rubric_total_weight += w
+        crit_by_key[c.key] = c
+
+    if not math.isfinite(rubric_total_weight) or rubric_total_weight <= 0.0:
+        raise ValueError("Rubric total weight must be finite and strictly positive.")
 
     tot_weights = 0.0
     tot_weighted_contrib = 0.0
 
-    crit_by_key = {c.key: c for c in rubric.criteria}
-
     for key, score in criterion_scores.items():
         crit = crit_by_key.get(key)
         if not crit:
-            continue
+            raise ValueError(f"Unknown criterion key '{key}'.")
+        if score is None or isinstance(score, bool):
+            raise ValueError(f"Invalid score for criterion '{key}'.")
         try:
             val = float(score)
         except (ValueError, TypeError):
-            continue
+            raise ValueError(f"Invalid numeric score '{score}' for criterion '{key}'.")
 
-        range_span = crit.max_score - crit.min_score
-        norm_contrib = (val - crit.min_score) / range_span if range_span > 0 else 1.0
-        tot_weighted_contrib += crit.weight * norm_contrib
-        tot_weights += crit.weight
+        if not math.isfinite(val):
+            raise ValueError(f"Score for criterion '{key}' must be finite.")
 
-    if tot_weights <= 0.0:
+        min_s = float(crit.min_score)
+        max_s = float(crit.max_score)
+        if val < min_s or val > max_s:
+            raise ValueError(f"Score for criterion '{key}' ({val}) is outside [{min_s}, {max_s}].")
+
+        range_span = max_s - min_s
+        if not math.isfinite(range_span) or range_span <= 0.0:
+            raise ValueError(f"Criterion '{key}' range (max_score - min_score) must be strictly positive.")
+
+        w = float(crit.weight)
+        norm_contrib = (val - min_s) / range_span
+        tot_weighted_contrib += w * norm_contrib
+        tot_weights += w
+
+    if not math.isfinite(tot_weights) or tot_weights <= 0.0:
         return None
 
     raw_total = 100.0 * (tot_weighted_contrib / tot_weights)
     return round(raw_total, 2)
+
 
 
 # --- Project Assignments ---

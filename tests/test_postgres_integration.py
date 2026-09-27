@@ -12,6 +12,7 @@ from app.models import (
     Account,
     Event,
     EventAuditLog,
+    EventResultsSnapshot,
     Judge,
     JudgeAssignment,
     Project,
@@ -794,4 +795,178 @@ def test_postgres_review_session_loaded_before_commit(pg_engine):
             )
     finally:
         session_b.close()
+
+
+def test_postgres_snapshot_consistent_read_and_reproduction_under_concurrent_review_change(pg_engine):
+    """Real PostgreSQL test: While create_results_snapshot is in progress, a concurrent session
+    modifies and commits review scores in PostgreSQL.
+    Proves:
+    1. Under REPEATABLE READ and single-pass canonical manifest capture, the snapshot's stored
+       manifest, review hashes, and results_data all describe one consistent point-in-time state (t0).
+    2. After the concurrent review changes are live in PostgreSQL (t1), reproduce_snapshot_results(snapshot)
+       reproduces snapshot.results_data identically from the stored canonical manifest.
+    3. check_snapshot_staleness(db, snapshot) detects the post-snapshot review updates.
+    """
+    import math
+    import uuid
+    from app.scoring_services import (
+        calculate_event_results,
+        check_snapshot_staleness,
+        create_results_snapshot,
+        reproduce_snapshot_results,
+    )
+
+    uid = uuid.uuid4().hex[:8]
+    event_id = f"evt_snap_iso_{uid}"
+
+    with Session(pg_engine) as setup_session:
+        org = create_account(setup_session, f"org_snap_{uid}@example.com", "Password123!", "Org Snap")
+        event = create_event(
+            setup_session,
+            event_id=event_id,
+            name=f"Snapshot Isolation {uid}",
+            submissions_close=datetime.now(timezone.utc) + timedelta(days=5),
+            creator_account_id=org.id,
+        )
+        track = Track(id=f"trk_snap_{uid}", event_id=event.id, name="Track Snap")
+        setup_session.add(track)
+        setup_session.flush()
+
+        crit = [{"key": "c1", "name": "Crit", "weight": 1.0, "min_score": 0.0, "max_score": 100.0}]
+        rub = create_or_update_event_rubric(setup_session, event.id, "Rubric Snap", crit, org)
+
+        judge_acc = create_account(setup_session, f"j_snap_{uid}@example.com", "Password123!", "Judge Snap")
+        judge = Judge(
+            id=f"jdg_snap_{uid}",
+            event_id=event.id,
+            name="Judge Snap",
+            email=f"j_snap_{uid}@example.com",
+            account_id=judge_acc.id,
+            tracks=[track.id],
+        )
+        setup_session.add(judge)
+        setup_session.flush()
+
+        initial_scores = [60.0, 80.0, 100.0]
+        project_ids = []
+        for idx, s_val in enumerate(initial_scores):
+            tm = Team(id=f"tm_snap_{idx}_{uid}", event_id=event.id, name=f"Team Snap {idx} {uid}")
+            setup_session.add(tm)
+            setup_session.flush()
+            p = Project(
+                id=f"prj_snap_{idx}_{uid}",
+                event_id=event.id,
+                team_id=tm.id,
+                track_id=track.id,
+                title=f"Project Snap {idx}",
+                summary="Summary",
+                repo_url="https://example.com/repo",
+                status="submitted",
+                submitted_at=datetime.now(timezone.utc),
+            )
+            setup_session.add(p)
+            setup_session.flush()
+            project_ids.append(p.id)
+            assign_judge_to_project(setup_session, event.id, judge.id, p.id, org)
+            save_judge_evaluation(
+                db=setup_session,
+                event_id=event.id,
+                judge=judge,
+                project_id=p.id,
+                criteria_inputs={"c1": s_val},
+                comment=f"Initial score {s_val}",
+                is_final=True,
+                expected_version=None,
+                actor=judge_acc,
+            )
+
+        setup_session.commit()
+        org_id = org.id
+        judge_id = judge.id
+        judge_account_id = judge_acc.id
+        p0_id, p1_id, p2_id = project_ids
+
+    mutation_executed = {"done": False}
+
+    def concurrent_writer_step():
+        """Runs mid-snapshot after REPEATABLE READ transaction has started and frozen its MVCC snapshot at t0,
+        but before Project, Review, and ReviewCriterionScore rows are queried by the snapshot reader.
+        """
+        with Session(pg_engine) as writer_session:
+            j_w = writer_session.get(Judge, judge_id)
+            act_w = writer_session.get(Account, judge_account_id)
+            # Flip p0 score from 60 -> 100 and p2 score from 100 -> 20 in a separate committed transaction (t1)
+            save_judge_evaluation(
+                db=writer_session,
+                event_id=event_id,
+                judge=j_w,
+                project_id=p0_id,
+                criteria_inputs={"c1": 100.0},
+                comment="Concurrent update p0 to 100",
+                is_final=True,
+                expected_version=1,
+                actor=act_w,
+            )
+            save_judge_evaluation(
+                db=writer_session,
+                event_id=event_id,
+                judge=j_w,
+                project_id=p2_id,
+                criteria_inputs={"c1": 20.0},
+                comment="Concurrent update p2 to 20",
+                is_final=True,
+                expected_version=1,
+                actor=act_w,
+            )
+            writer_session.commit()
+            mutation_executed["done"] = True
+
+    with Session(pg_engine) as snap_session:
+        org_actor = snap_session.get(Account, org_id)
+        snapshot = create_results_snapshot(
+            db=snap_session,
+            event_id=event_id,
+            creator_account=org_actor,
+            on_manifest_read_step=concurrent_writer_step,
+        )
+        snap_id = snapshot.id
+
+    assert mutation_executed["done"] is True
+
+    # Verify in a fresh session:
+    with Session(pg_engine) as verify_session:
+        loaded_snap = verify_session.get(EventResultsSnapshot, snap_id)
+        assert loaded_snap is not None
+
+        # 1. Snapshot's manifest and results_data both reflect the consistent t0 state (60, 80, 100)
+        cohort_t0 = loaded_snap.results_data["cohorts"][0]
+        p_t0_map = {p["project_id"]: p for p in cohort_t0["projects"]}
+        assert math.isclose(p_t0_map[p0_id]["raw_mean"], 60.0, rel_tol=1e-9)
+        assert math.isclose(p_t0_map[p1_id]["raw_mean"], 80.0, rel_tol=1e-9)
+        assert math.isclose(p_t0_map[p2_id]["raw_mean"], 100.0, rel_tol=1e-9)
+        assert p_t0_map[p2_id]["normalized_rank"] == 1
+        assert p_t0_map[p0_id]["normalized_rank"] == 3
+
+        manifest_revs = {
+            r["project_id"]: r["criterion_scores"]["c1"]
+            for r in loaded_snap.input_review_hashes["manifest"]["reviews"]
+        }
+        assert manifest_revs == {p0_id: 60.0, p1_id: 80.0, p2_id: 100.0}
+
+        # 2. Live database results at t1 reflect the concurrent writer's commit (100, 80, 20)
+        live_results = calculate_event_results(verify_session, event_id)
+        p_live_map = {p["project_id"]: p for p in live_results["cohorts"][0]["projects"]}
+        assert math.isclose(p_live_map[p0_id]["raw_mean"], 100.0, rel_tol=1e-9)
+        assert math.isclose(p_live_map[p2_id]["raw_mean"], 20.0, rel_tol=1e-9)
+        assert p_live_map[p0_id]["normalized_rank"] == 1
+
+        # 3. Reproduce snapshot results purely from stored manifest -> matches t0 results_data identically!
+        reproduced = reproduce_snapshot_results(loaded_snap)
+        assert reproduced == loaded_snap.results_data
+
+        # 4. Staleness check against live t1 database detects the 2 updated reviews
+        staleness = check_snapshot_staleness(verify_session, loaded_snap)
+        assert staleness["is_stale"] is True
+        assert any("2 review(s) updated since snapshot" in r for r in staleness["stale_reasons"])
+
 

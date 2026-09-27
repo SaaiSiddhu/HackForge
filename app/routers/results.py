@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
-from typing import Annotated, Any, Optional
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,6 +22,7 @@ from app.scoring_services import (
     calculate_event_results,
     check_snapshot_staleness,
     create_results_snapshot,
+    validate_normalization_parameters,
 )
 from app.templating import get_request_csrf_token, templates
 
@@ -34,7 +35,7 @@ def check_results_authorization(
     account: Optional[Account],
 ) -> Account:
     """Authorize access to judging results and exports.
-    
+
     Enforces:
     - User is authenticated (401).
     - User is an authorized event organizer or platform admin for event_id (403).
@@ -59,6 +60,25 @@ def check_results_authorization(
     return account
 
 
+def _load_authorized_snapshot(
+    db: Session,
+    request_event_id: str,
+    snapshot_id: str,
+    account: Optional[Account],
+) -> EventResultsSnapshot:
+    """Load a snapshot and strictly verify both request event authorization and stored snapshot.event_id ownership."""
+    check_results_authorization(db, request_event_id, account)
+    snapshot = db.get(EventResultsSnapshot, snapshot_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Snapshot not found.")
+    # Verify authorization against the snapshot's stored event_id as well
+    if snapshot.event_id != request_event_id:
+        check_results_authorization(db, snapshot.event_id, account)
+        raise HTTPException(status_code=404, detail="Snapshot does not belong to the requested event.")
+    check_results_authorization(db, snapshot.event_id, account)
+    return snapshot
+
+
 # --- Organizer Results View & Snapshot Management ---
 
 
@@ -70,8 +90,9 @@ def organizer_results_view(
     snapshot_id: Optional[str] = Query(None),
     track_id: Optional[str] = Query(None),
     rubric_id: Optional[str] = Query(None),
-    min_sample: int = Query(3, ge=1),
-    epsilon: float = Query(1e-6, ge=0.0),
+    min_sample: int = Query(3),
+    epsilon: float = Query(1e-6),
+    method: str = Query("zscore_v1"),
     db: Session = Depends(get_db),
     account: Optional[Account] = Depends(get_current_account),
 ):
@@ -86,22 +107,29 @@ def organizer_results_view(
     staleness_info = {"is_stale": False, "stale_reasons": []}
 
     if snapshot_id:
-        selected_snapshot = db.get(EventResultsSnapshot, snapshot_id)
-        if not selected_snapshot or selected_snapshot.event_id != event_id:
-            raise HTTPException(status_code=404, detail="Snapshot not found for this event.")
+        selected_snapshot = _load_authorized_snapshot(db, event_id, snapshot_id, account)
         results_data = selected_snapshot.results_data
         staleness_info = check_snapshot_staleness(db, selected_snapshot)
     else:
-        results_data = calculate_event_results(
-            db=db,
-            event_id=event_id,
-            track_id=track_id,
-            rubric_id=rubric_id,
-            min_sample=min_sample,
-            epsilon=epsilon,
-        )
+        try:
+            clean_min_sample, clean_epsilon, clean_method = validate_normalization_parameters(
+                min_sample=min_sample,
+                epsilon=epsilon,
+                method=method,
+            )
+            results_data = calculate_event_results(
+                db=db,
+                event_id=event_id,
+                track_id=track_id,
+                rubric_id=rubric_id,
+                min_sample=clean_min_sample,
+                epsilon=clean_epsilon,
+                method=clean_method,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
-    # Determine selected cohort
+    # Determine selected cohort (defaults to first comparable track/rubric cohort)
     cohorts = results_data.get("cohorts", [])
     selected_cohort = None
     if cohort_id:
@@ -125,6 +153,7 @@ def organizer_results_view(
                 "event_id": event_id,
                 "snapshot_id": selected_snapshot.id if selected_snapshot else None,
                 "is_stale": staleness_info.get("is_stale", False),
+                "provenance_status": staleness_info.get("provenance_status", "live"),
                 "selected_cohort": selected_cohort,
                 "results_data": results_data,
             },
@@ -153,33 +182,44 @@ async def create_results_snapshot_endpoint(
     db: Session = Depends(get_db),
     account: Optional[Account] = Depends(get_current_account),
 ):
-    """Compute and freeze an immutable results snapshot with cryptographic signatures."""
+    """Compute and freeze an immutable results snapshot with canonical manifest provenance."""
     check_results_authorization(db, event_id, account)
 
+    event = db.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found.")
+
     content_type = request.headers.get("content-type", "").lower()
-    params = {"min_sample": 3, "epsilon": 1e-6}
+    params: dict[str, Any] = {"min_sample": 3, "epsilon": 1e-6, "method": "zscore_v1"}
 
     if "application/json" in content_type:
         payload = await request.json()
-        params.update(payload)
+        if isinstance(payload, dict):
+            params.update(payload)
     else:
         form = await request.form()
         validate_csrf(request, csrf_token_form=form.get("csrf_token"))
-        if form.get("min_sample"):
-            params["min_sample"] = int(form.get("min_sample"))
-        if form.get("epsilon"):
-            params["epsilon"] = float(form.get("epsilon"))
+        if form.get("min_sample") is not None and str(form.get("min_sample")).strip() != "":
+            params["min_sample"] = form.get("min_sample")
+        if form.get("epsilon") is not None and str(form.get("epsilon")).strip() != "":
+            params["epsilon"] = form.get("epsilon")
+        if form.get("method") is not None and str(form.get("method")).strip() != "":
+            params["method"] = form.get("method")
         if form.get("track_id"):
             params["track_id"] = form.get("track_id")
         if form.get("rubric_id"):
             params["rubric_id"] = form.get("rubric_id")
 
-    snapshot = create_results_snapshot(
-        db=db,
-        event_id=event_id,
-        creator_account=account,
-        parameters=params,
-    )
+    try:
+        snapshot = create_results_snapshot(
+            db=db,
+            event_id=event_id,
+            creator_account=account,
+            method=str(params.get("method", "zscore_v1")),
+            parameters=params,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     if "application/json" in content_type:
         return JSONResponse(
@@ -204,20 +244,24 @@ async def create_results_snapshot_endpoint(
 def export_judging_results(
     event_id: str,
     cohort_id: Optional[str] = Query(None),
+    track_id: Optional[str] = Query(None),
+    rubric_id: Optional[str] = Query(None),
     snapshot_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     account: Optional[Account] = Depends(get_current_account),
 ):
     """Export normalized and raw judging results with RFC 4180 and formula protection."""
+    check_results_authorization(db, event_id, account)
     if snapshot_id:
-        snapshot = db.get(EventResultsSnapshot, snapshot_id)
-        if not snapshot or snapshot.event_id != event_id:
-            raise HTTPException(status_code=404, detail="Snapshot not found for this event.")
-        check_results_authorization(db, snapshot.event_id, account)
+        snapshot = _load_authorized_snapshot(db, event_id, snapshot_id, account)
         results_data = snapshot.results_data
     else:
-        check_results_authorization(db, event_id, account)
-        results_data = calculate_event_results(db=db, event_id=event_id)
+        results_data = calculate_event_results(
+            db=db,
+            event_id=event_id,
+            track_id=track_id,
+            rubric_id=rubric_id,
+        )
 
     csv_content = generate_judging_results_csv(results_data, cohort_id=cohort_id)
     return Response(
@@ -233,12 +277,16 @@ def export_judging_results(
 @router.get("/events/{event_id}/export/reviews.csv", summary="Export all reviews CSV")
 def export_reviews(
     event_id: str,
+    snapshot_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     account: Optional[Account] = Depends(get_current_account),
 ):
     """Export all reviews with scores, rubric versions, and eligibility reasons."""
     check_results_authorization(db, event_id, account)
-    csv_content = generate_reviews_csv(db=db, event_id=event_id)
+    snapshot = None
+    if snapshot_id:
+        snapshot = _load_authorized_snapshot(db, event_id, snapshot_id, account)
+    csv_content = generate_reviews_csv(db=db, event_id=event_id, snapshot=snapshot)
     return Response(
         content=csv_content,
         media_type="text/csv; charset=utf-8",
@@ -309,20 +357,24 @@ def export_projects(
 @router.get("/events/{event_id}/export/judges-calibration.csv", summary="Export judges calibration CSV")
 def export_judges_calibration(
     event_id: str,
+    track_id: Optional[str] = Query(None),
+    rubric_id: Optional[str] = Query(None),
     snapshot_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     account: Optional[Account] = Depends(get_current_account),
 ):
     """Export judge sample counts, means, population standard deviations, and usability flags."""
+    check_results_authorization(db, event_id, account)
     if snapshot_id:
-        snapshot = db.get(EventResultsSnapshot, snapshot_id)
-        if not snapshot or snapshot.event_id != event_id:
-            raise HTTPException(status_code=404, detail="Snapshot not found for this event.")
-        check_results_authorization(db, snapshot.event_id, account)
+        snapshot = _load_authorized_snapshot(db, event_id, snapshot_id, account)
         results_data = snapshot.results_data
     else:
-        check_results_authorization(db, event_id, account)
-        results_data = calculate_event_results(db=db, event_id=event_id)
+        results_data = calculate_event_results(
+            db=db,
+            event_id=event_id,
+            track_id=track_id,
+            rubric_id=rubric_id,
+        )
 
     csv_content = generate_judges_calibration_csv(results_data)
     return Response(

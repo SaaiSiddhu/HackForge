@@ -70,9 +70,9 @@ def generate_judging_results_csv(
     cohort_id: Optional[str] = None,
 ) -> str:
     """Generate judging results CSV from calculated results data or snapshot.
-    
+
     Header:
-    rank,project_id,project_title,track_id,team_id,team_name,normalized_index,normalized_rank,raw_mean,raw_rank,completed_reviews,target_reviews,coverage_status,is_provisional,rubric_id
+    rank,project_id,project_title,track_id,team_id,team_name,normalized_index,normalized_rank,raw_mean,raw_rank,completed_reviews,target_reviews,coverage_status,is_provisional,rubric_id,component_id,component_normalized_rank
     """
     headers = [
         "rank",
@@ -90,6 +90,8 @@ def generate_judging_results_csv(
         "coverage_status",
         "is_provisional",
         "rubric_id",
+        "component_id",
+        "component_normalized_rank",
     ]
 
     cohorts = results_data.get("cohorts", [])
@@ -106,11 +108,21 @@ def generate_judging_results_csv(
     rows = []
     projects = selected_cohort.get("projects", [])
     for p in projects:
-        display_rank = p.get("normalized_rank") or p.get("raw_rank") or ""
+        if p.get("normalized_rank") is not None:
+            display_rank = p["normalized_rank"]
+        elif p.get("component_normalized_rank") is not None:
+            display_rank = f"{p.get('component_id', 'Component')} #{p['component_normalized_rank']}"
+        elif p.get("raw_rank") is not None:
+            display_rank = p["raw_rank"]
+        else:
+            display_rank = ""
+
         norm_idx = f"{p['normalized_index']:.4f}" if p.get("normalized_index") is not None else ""
         norm_rank = p.get("normalized_rank") if p.get("normalized_rank") is not None else ""
         raw_m = f"{p['raw_mean']:.2f}" if p.get("raw_mean") is not None else ""
         raw_r = p.get("raw_rank") if p.get("raw_rank") is not None else ""
+        comp_id = p.get("component_id", "")
+        comp_norm_rank = p.get("component_normalized_rank") if p.get("component_normalized_rank") is not None else ""
 
         rows.append([
             display_rank,
@@ -128,12 +140,18 @@ def generate_judging_results_csv(
             p.get("coverage_status", ""),
             p.get("is_provisional", False),
             p.get("rubric_id", ""),
+            comp_id,
+            comp_norm_rank,
         ])
 
     return build_csv_string(headers, rows)
 
 
-def generate_reviews_csv(db: Session, event_id: str) -> str:
+def generate_reviews_csv(
+    db: Session,
+    event_id: str,
+    snapshot: Optional[EventResultsSnapshot] = None,
+) -> str:
     """Generate detailed reviews CSV including eligibility, raw scores, and rubric binding."""
     headers = [
         "review_id",
@@ -154,6 +172,56 @@ def generate_reviews_csv(db: Session, event_id: str) -> str:
         "updated_at",
     ]
 
+    if snapshot and isinstance(snapshot.input_review_hashes, dict) and "manifest" in snapshot.input_review_hashes:
+        manifest = snapshot.input_review_hashes["manifest"]
+        judges = {j["id"]: j for j in manifest.get("judges", [])}
+        projects = {p["id"]: p for p in manifest.get("projects", [])}
+        rubrics = {r["id"]: r for r in manifest.get("rubrics", [])}
+        team_members = {
+            tm["id"]: set(tm.get("member_account_ids") or [])
+            for tm in manifest.get("teams", [])
+        }
+        rows = []
+        for r in manifest.get("reviews", []):
+            j = judges.get(r["judge_id"])
+            p = projects.get(r["project_id"])
+            rub = rubrics.get(r.get("rubric_id"))
+            c_scores = r.get("criterion_scores") or {}
+            t_mems = team_members.get(p["team_id"], set()) if p else set()
+
+            is_eligible, inelig_reason = evaluate_review_eligibility(
+                review=r,
+                project=p,
+                judge=j,
+                rubric=rub,
+                criteria_scores=c_scores,
+                team_members=t_mems,
+            )
+            raw_display = ""
+            if is_eligible and rub:
+                calc_raw = calculate_raw_review_score(rub, c_scores)
+                raw_display = f"{calc_raw:.2f}"
+
+            rows.append([
+                r.get("review_id", f"{r['judge_id']}:{r['project_id']}"),
+                event_id,
+                r["judge_id"],
+                j.get("name", "") if j else "",
+                j.get("email", "") if j else "",
+                r["project_id"],
+                p.get("title", "") if p else "",
+                p.get("track_id", "") if p else "",
+                r.get("status", ""),
+                r.get("rubric_id") or "",
+                rub.get("version", "") if rub else "",
+                raw_display,
+                is_eligible,
+                inelig_reason or "",
+                "",
+                r.get("updated_at", ""),
+            ])
+        return build_csv_string(headers, rows)
+
     reviews = db.scalars(
         select(Review).where(Review.event_id == event_id).order_by(Review.project_id.asc(), Review.judge_id.asc())
     ).all()
@@ -169,19 +237,23 @@ def generate_reviews_csv(db: Session, event_id: str) -> str:
         for m in db.scalars(select(TeamMembership).where(TeamMembership.team_id == tm.id)).all():
             team_members[tm.id].add(m.account_id)
 
-    crit_rows = db.scalars(
-        select(ReviewCriterionScore)
-    ).all()
     crit_by_rev = defaultdict(dict)
-    for cr in crit_rows:
-        crit_by_rev[(cr.judge_id, cr.project_id)][cr.criterion_key] = float(cr.score)
+    if projects:
+        crit_rows = db.scalars(
+            select(ReviewCriterionScore).where(ReviewCriterionScore.project_id.in_(list(projects.keys())))
+        ).all()
+        for cr in crit_rows:
+            crit_by_rev[(cr.judge_id, cr.project_id)][cr.criterion_key] = float(cr.score)
 
     rows = []
     for r in reviews:
         j = judges.get(r.judge_id)
         p = projects.get(r.project_id)
         rub = rubrics.get(r.rubric_id)
-        c_scores = crit_by_rev.get((r.judge_id, r.project_id), {})
+        c_scores = crit_by_rev.get((r.judge_id, r.project_id))
+        if not c_scores and isinstance(r.criteria, dict):
+            c_scores = {k: float(v) for k, v in r.criteria.items()}
+        c_scores = c_scores or {}
         t_mems = team_members.get(p.team_id, set()) if p else set()
 
         is_eligible, inelig_reason = evaluate_review_eligibility(
@@ -194,14 +266,9 @@ def generate_reviews_csv(db: Session, event_id: str) -> str:
         )
 
         raw_display = ""
-        if rub and c_scores and is_eligible:
-            try:
-                calc_raw = calculate_raw_review_score(rub, c_scores)
-                raw_display = f"{calc_raw:.2f}"
-            except Exception:
-                raw_display = f"{r.raw_score:.2f}" if r.raw_score is not None else ""
-        elif r.raw_score is not None:
-            raw_display = f"{r.raw_score:.2f}"
+        if is_eligible and rub:
+            calc_raw = calculate_raw_review_score(rub, c_scores)
+            raw_display = f"{calc_raw:.2f}"
 
         created_str = r.created_at.isoformat() if r.created_at else ""
         updated_str = r.updated_at.isoformat() if r.updated_at else ""
@@ -226,6 +293,7 @@ def generate_reviews_csv(db: Session, event_id: str) -> str:
         ])
 
     return build_csv_string(headers, rows)
+
 
 
 def generate_assignments_csv(db: Session, event_id: str) -> str:
