@@ -1,10 +1,10 @@
 # Judging Engine & Normalization Status
 
-## Current Status: Phase 1 (Foundation)
+## Current Status: Phase 2 (T1 Workflows Implemented; Phase 3 Scope Guarded)
 
-> **IMPORTANT**: Judging workflows, scoring forms, judge assignments, and score normalization algorithms are **NOT** yet implemented.
+> **IMPORTANT**: In accordance with the DOGFOOD 2026 specification and Phase 2 assignment scope, judging workflows, scoring forms, judge assignments, and score normalization algorithms are **NOT** implemented in Phase 2.
 >
-> In Phase 1, review records from `fixtures.json` are imported into database storage only. All review records, criteria ratings, judge emails, and private comments are strictly isolated on the backend. No public route, gallery view, or API endpoint exposes judging data or produces rankings.
+> Review records from `fixtures.json` (30 judges, 126 reviews) remain safely stored in the database. All criteria ratings, reviewer emails, and private comments are strictly isolated on the backend. No judging data or peer scores are exposed. T2 is explicitly unclaimed in `.dogfood.toml`.
 
 ---
 

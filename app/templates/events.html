@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Events · HackForge{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px;">
+  <div>
+    <div class="eyebrow">Hackathon Calendar</div>
+    <h1 style="margin: 6px 0 10px;">Events</h1>
+    <p class="intro" style="margin-bottom: 0;">Explore upcoming and active hackathons, register teams, and submit your builds.</p>
+  </div>
+  {% if current_account and (current_account.is_platform_admin or organizer_event_ids) %}
+    <a href="/events/new" class="btn btn-primary">+ Create Event</a>
+  {% endif %}
+</div>
+
+<div class="grid">
+  {% for event in events %}
+    <article>
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+        <span class="tag">Event</span>
+        {% if event.is_open %}
+          <span class="status-badge status-submitted">Open for Submissions</span>
+        {% else %}
+          <span class="status-badge status-closed">Closed</span>
+        {% endif %}
+      </div>
+      
+      <h2>{{ event.name }}</h2>
+      <p style="margin-bottom: 16px;">{{ event.description or 'Official hackathon event.' }}</p>
+
+      <div style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-muted); margin-bottom: 20px;">
+        <div><strong>Submissions Close:</strong> {{ event.submissions_close.strftime('%B %d, %Y at %H:%M UTC') }}</div>
+        <div><strong>Team Size:</strong> {{ event.min_team_size }} – {{ event.max_team_size }} members</div>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: auto;">
+        {% if event.is_open %}
+          <a href="/events/{{ event.id }}/submit" class="btn btn-primary" style="flex: 1; text-align: center;">Submit Project</a>
+          <a href="/events/{{ event.id }}/teams/new" class="btn btn-secondary">Create Team</a>
+        {% else %}
+          <a href="/projects?event={{ event.id }}" class="btn btn-secondary" style="flex: 1; text-align: center;">View Projects</a>
+        {% endif %}
+
+        {% if current_account and (current_account.is_platform_admin or event.id in organizer_event_ids) %}
+          <a href="/events/{{ event.id }}/manage" class="btn btn-secondary">Manage</a>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</div>
+{% endblock %}

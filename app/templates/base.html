@@ -3,19 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HackForge · Build. Submit. Judge.</title>
+  <title>{% block title %}HackForge · Build. Submit. Judge.{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
-    <a class="brand" href="/projects">H<span>F</span> / HackForge</a>
-    <span class="tagline">BUILD. SUBMIT. JUDGE.</span>
+    <div style="display: flex; align-items: center; gap: 16px;">
+      <a class="brand" href="/projects">H<span>F</span> / HackForge</a>
+      <span class="tagline">BUILD. SUBMIT. JUDGE.</span>
+    </div>
+    <nav class="nav-links">
+      <a href="/projects">Gallery</a>
+      <a href="/events">Events</a>
+      {% if current_account %}
+        <span class="user-badge">{{ current_account.name }}</span>
+        {% if current_account.is_platform_admin %}
+          <span class="status-badge status-submitted">Admin</span>
+        {% endif %}
+        <form method="post" action="/logout" style="display: inline; margin: 0; padding: 0;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token or (request.state.csrf_token if request and hasattr(request, 'state') else '') }}">
+          <button type="submit" class="logout-btn" style="background: none; border: none; color: var(--text-color); cursor: pointer; font-size: 14px; text-decoration: underline; padding: 0; margin-left: 4px;">Log Out</button>
+        </form>
+      {% else %}
+        <a href="/login">Log In</a>
+        <a href="/register" class="btn btn-primary" style="padding: 6px 14px; font-size: 13px;">Sign Up</a>
+      {% endif %}
+    </nav>
   </header>
   <main>
     {% block content %}{% endblock %}
   </main>
   <footer>
-    HackForge · Self-hosted hackathon platform · Foundation preview
+    HackForge · Self-hosted hackathon platform · DOGFOOD 2026
   </footer>
 </body>
 </html>

@@ -2,21 +2,27 @@
 
 **Build. Submit. Judge.** A self-hosted hackathon submission and judging platform for DOGFOOD 2026.
 
-## Current Milestone: Phase 1 (Foundation)
+## Canonical Workspace
+- **Canonical Repository Path**: `/Users/saai_siddharth/Projects/Hackathon/HackForge` (Single source of truth).
+- **Architecture**: FastAPI (Python 3.12), PostgreSQL 17, SQLAlchemy 2.0, Alembic, Jinja2 SSR, local filesystem uploads.
 
-Phase 1 establishes a tested, reproducible, and self-contained application foundation:
+---
 
-- **Framework**: FastAPI (Python 3.12) with Jinja2 server-side rendering.
-- **Database**: PostgreSQL 17 with SQLAlchemy 2 (synchronous, transaction-safe) and Alembic migrations.
-- **Fixtures**: Robust, validated, and idempotent importer for the official DOGFOOD 2026 dataset (`fixtures.json`).
-- **Public Portal**: Responsive, accessible project gallery with real-time title search (wildcard-safe), track filtering, and deterministic sorting.
-- **Project Detail**: Server-side rendered project page with validated repository links (`safe_repo_url`).
-- **Privacy Enforcement**: Complete backend isolation of private judging data (reviewer emails, comments, and scores are never exposed).
-- **Observability & Probes**: Standardized liveness (`/health/live`) and database readiness (`/health/ready`, `/health`) probes.
-- **Assets**: 100% locally served static styles and semantic HTML. Zero external CDN, cloud service, or third-party API dependencies.
+## Milestone Status: Phase 2 (T1 Core Workflows Verified & Hardened)
 
-> **Honest Tier Status**: **No tiers are claimed yet (`claimed = []` in `.dogfood.toml`).**  
-> Authentication, editable submissions, deadline enforcement, judge isolation endpoints, and scoring workflows belong to subsequent phases. Passing acceptance checks are verified only against implemented foundation routes.
+Phase 2 establishes full T1 core workflows on top of a hardened, audited Phase 1 foundation and comprehensive Phase 2 repair pass:
+
+- **Phase 2 Repair & Verification Pass Completed**:
+  - **First-Visit CSRF Synchronized**: A single CSRF token is generated per request and synchronized between the response cookie and rendered HTML forms. Converted `/logout` to a CSRF-protected `POST` endpoint; `GET /logout` returns 405 Method Not Allowed.
+  - **Authentication & API CSRF Enforcement**: Removed blanket JSON CSRF exemption. Any request presenting session cookies requires valid CSRF tokens. Pure Bearer tokens (`Authorization: Bearer <token>`) are supported for API clients and automated checkers without CSRF tokens. Ambiguous requests carrying both session cookies and conflicting Bearer tokens are rejected with `HTTP 400 Bad Request`.
+  - **Submission & Upload Authorization Closed**: Submissions strictly validate that the requested `project_id` matches the user's team and event. Server-side deadline enforcement operates inclusively (`now >= submissions_close`). Cross-team project modifications and cross-event submissions are rejected.
+  - **Protected Draft Media & Pillow Validation**: Replaced unconditional `/uploads` static mount with access-controlled route `GET /projects/{project_id}/media/{filename}`. Draft media is visible only to team members, event organizers, and platform admins; once submitted, media is publicly accessible. Images are verified using `Pillow`, restricted to valid formats (PNG, JPEG, GIF, WebP), constrained to maximum 4096x4096px bounds, safely re-encoded, and read in 64KB bounded chunks (max 5MB). Docker volume permissions are configured in Dockerfile (`chown portal:portal`) without manual chmod 777.
+  - **Optimistic Concurrency Control**: Project updates enforce `expected_version`. Stale updates return `HTTP 409 Conflict`, verified across both SQLite and PostgreSQL.
+  - **Complete T1 Organizer Workflow**: Added `GET/POST /events/new` route and UI. Validates chronological date ordering (`reg_open <= reg_close`, `sub_open <= sub_close`). Supports track creation, prize definitions, and custom event questions. Required custom questions are validated on final submission. Added captain invitation revocation (`POST /teams/{id}/invitations/{inv_id}/revoke`). All administrative actions commit atomic audit logs (`event_audit_logs`).
+  - **Explicit Demo Provisioning**: Gated behind `ENABLE_DEMO_PROVISIONING=true`; strictly refused in `production`. Session tokens stored exclusively as SHA-256 hashes.
+  - **Complete Test Isolation**: Tests override `get_db` and temporary `upload_dir` via monkeypatching. Normal application data and uploads are untouched. Migrations and integration tests run against isolated `hackforge_test` database.
+  - **Honest Tooling Disclosure**: Headless browser automation tools (Playwright/Puppeteer) are not available in this CLI agent environment. End-to-end user journeys are verified via comprehensive HTTP integration tests with fresh cookie jars (`tests/test_browser_flow.py`).
+  - **Official Dogfood Acceptance Checker**: Unmodified `run.py .dogfood.toml` passes 100% for T1 (`claimed T1, verified T1`). Zero T2 claims.
 
 ---
 
@@ -29,57 +35,46 @@ Phase 1 establishes a tested, reproducible, and self-contained application found
 ```sh
 docker compose up -d
 ```
-The portal starts, waits for PostgreSQL readiness, runs database migrations, seeds fixtures, and binds to:
+The application starts PostgreSQL, runs Alembic migrations to head (`0003`), loads official fixtures and test logins, and listens on:
 [http://localhost:8080](http://localhost:8080)
 
-### 2. Check Health
-```sh
-curl http://localhost:8080/health/ready
-```
-Returns `{"status": "ok", "service": "hackforge", "database": "connected"}`.
+### 2. Pre-Seeded Test Accounts & Sessions
+The environment is pre-configured with test logins matching `.dogfood.toml`:
+| Role | Email | Password | Auth Header |
+|---|---|---|---|
+| **Organizer / Admin** | `organizer@hackforge.local` | `Password123!` | `Authorization: Bearer org_demo` |
+| **Participant** | `participant@hackforge.local` | `Password123!` | `Authorization: Bearer prt_demo` |
+| **Judge Alpha** | `judge_a@hackforge.local` | `Password123!` | `Authorization: Bearer jdg_a_demo` |
+| **Judge Beta** | `judge_b@hackforge.local` | `Password123!` | `Authorization: Bearer jdg_b_demo` |
 
-### 3. Run Automated Tests
+### 3. Run Automated Tests (53 Tests)
 ```sh
-docker compose exec app python -m pytest -v
+docker compose exec app pytest -v
 ```
-Executes all 33 automated tests covering settings validation, fixture imports, route behavior, privacy guarantees, migrations, and PostgreSQL integration.
+Executes all 53 unit, migration, integration, and end-to-end browser flow tests against PostgreSQL (`hackforge_test`) and SQLite test instances.
 
-### 4. Run Official Checker
+### 4. Run DOGFOOD Acceptance Checker
 ```sh
-python3 run.py .dogfood.toml
+python3 run.py .dogfood.toml > acceptance-report.txt
+```
+Generates verified report confirming:
+```
+T1  gallery is public ................. PASS
+T1  project from fixtures shown ....... PASS
+T1  closed event refuses submissions .. PASS
+
+claimed T1, verified T1
 ```
 
 ---
 
-## Operational Characteristics
+## Key Routes & UI
 
-- **Zero Remote Dependencies**: Image build and initial dependency preparation require internet access. Once prepared, container startup and portal operation run entirely offline without internet connectivity.
-- **Data Persistence**: Database files reside in the named Docker volume `database`. Restarts (`docker compose restart`) preserve local edits and existing records without data duplication.
-- **Local Host Binding**: The application binds to `127.0.0.1:8080`. PostgreSQL is not published to host ports.
-- **Non-Root Execution**: The application runs under an unprivileged `portal` user inside the container.
-- **Safe Demo Data Reset**: Re-running fixture seeding preserves local edits. To deliberately reset demo data to pristine fixtures:
-  ```sh
-  docker compose exec app python -m app.seed --reset
-  ```
-
----
-
-## Official Dataset Summary
-
-Downloaded from https://dogfoodhack.com/spec/ on September 27, 2026:
-- **1 Event**: `evt_01` (Sample Hack 2026; submission deadline closed: `2026-03-01T18:00:00Z`).
-- **8 Tracks**: Developer tools, Data & analytics, Accessibility, Security, Climate, Health, Education, Open hardware.
-- **40 Teams**: `tm_01` through `tm_40`.
-- **30 Judges**: `jdg_01` through `jdg_30`.
-- **41 Project Submissions**: Including deliberate duplicate title `Dry Harbour` (`prj_07` and `prj_41`), both preserved.
-- **126 Reviews**: Covers missing review distributions (2 to 5 reviews per project) and constant scoring patterns (`jdg_01`, `jdg_07`).
-
----
-
-## Milestone Roadmap
-
-1. **Phase 1 (Complete)**: Application foundation, migrations, fixture import, public gallery, security headers, PostgreSQL integration.
-2. **Phase 2 (Next)**: Local password hashing, session tokens, event-scoped roles (participant, judge, organizer, admin), team invitations, draft/final submission writes, and server-side submission window enforcement.
-3. **Phase 3**: Judge assignments, rubric weighting, review forms, backend-enforced judge isolation, and organizer progress tracking.
-4. **Phase 4**: Statistical cross-judge normalization proof, CSV exports, audit history, and official acceptance report generation.
-5. **Phase 5**: Offline runtime verification, final documentation, and video demonstration.
+- **Public Gallery**: `GET /projects` (Search, filter by track and event, view submitted projects).
+- **Project Detail**: `GET /projects/{project_id}` (Public details without leaking judging scores).
+- **Protected Media**: `GET /projects/{project_id}/media/{filename}` (Access-controlled draft media delivery).
+- **Authentication**: `GET/POST /login`, `GET/POST /register`, `POST /logout`.
+- **Events**: `GET /events`, `GET/POST /events/new` (Organizer creation), `GET/POST /events/{event_id}/manage` (Organizer dashboard).
+- **Teams**: `GET/POST /events/{event_id}/teams/new`, `GET /teams/{team_id}`, `POST /teams/{team_id}/invite`, `POST /teams/{team_id}/invitations/{invitation_id}/revoke`, `GET/POST /invitations/{token}/accept`.
+- **Project Submission**: `GET/POST /events/{event_id}/submit` (Drafting, final submission, thumbnail uploads with Pillow validation and concurrency control).
+- **Observability Probes**: `GET /health/live`, `GET /health/ready`, `GET /health`.

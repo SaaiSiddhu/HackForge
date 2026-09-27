@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block title %}Project Submission · {{ event.name }}{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/events">← Back to Events</a>
+</div>
+
+<div class="project-header">
+  <div class="eyebrow">{{ event.name }}</div>
+  <h1 style="margin: 8px 0 12px;">Project Submission</h1>
+  <p class="intro">
+    Team: <strong>{{ team.name }}</strong> ·
+    Deadline: <strong>{{ event.submissions_close.strftime('%B %d, %Y at %H:%M UTC') }}</strong>
+  </p>
+</div>
+
+{% if not event_is_open %}
+  <div class="alert alert-danger">
+    <strong>Submissions are closed.</strong> The deadline for {{ event.name }} has passed. New submissions and modifications are disabled.
+  </div>
+{% endif %}
+
+{% if success_msg %}
+  <div class="alert alert-success">{{ success_msg }}</div>
+{% endif %}
+{% if error_msg %}
+  <div class="alert alert-danger">{{ error_msg }}</div>
+{% endif %}
+
+<div class="card" style="max-width: 800px;">
+  <form method="POST" action="/events/{{ event.id }}/submit" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="expected_version" value="{{ project.version if project else 1 }}">
+    <input type="hidden" name="project_id" value="{{ project.id if project else '' }}">
+
+    {% if project and project.status %}
+      <div style="margin-bottom: 20px;">
+        <span class="status-badge {{ 'status-submitted' if project.status == 'submitted' else 'status-draft' }}">
+          Status: {{ project.status }} (Version {{ project.version }})
+        </span>
+      </div>
+    {% endif %}
+
+    <div class="form-group">
+      <label for="title">Project Title *</label>
+      <input type="text" id="title" name="title" value="{{ project.title if project else '' }}" required {{ 'disabled' if not event_is_open }}>
+    </div>
+
+    <div class="form-group">
+      <label for="tagline">Short Tagline</label>
+      <input type="text" id="tagline" name="tagline" value="{{ project.tagline if project else '' }}" placeholder="A one-line pitch of what it does" {{ 'disabled' if not event_is_open }}>
+    </div>
+
+    <div class="form-group">
+      <label for="track_id">Track *</label>
+      <select id="track_id" name="track_id" required {{ 'disabled' if not event_is_open }}>
+        {% for track in tracks %}
+          <option value="{{ track.id }}" {% if project and project.track_id == track.id %}selected{% endif %}>
+            {{ track.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label for="summary">Summary *</label>
+      <textarea id="summary" name="summary" required {{ 'disabled' if not event_is_open }}>{{ project.summary if project else '' }}</textarea>
+    </div>
+
+    <div class="form-group">
+      <label for="repo_url">Code Repository URL *</label>
+      <input type="url" id="repo_url" name="repo_url" value="{{ project.repo_url if project else '' }}" placeholder="https://github.com/..." required {{ 'disabled' if not event_is_open }}>
+    </div>
+
+    <div class="form-group">
+      <label for="demo_url">Live Demo / Product URL</label>
+      <input type="url" id="demo_url" name="demo_url" value="{{ project.demo_url if project else '' }}" placeholder="https://..." {{ 'disabled' if not event_is_open }}>
+    </div>
+
+    <div class="form-group">
+      <label for="description">Full Description & Architecture</label>
+      <textarea id="description" name="description" rows="5" {{ 'disabled' if not event_is_open }}>{{ project.description if project else '' }}</textarea>
+    </div>
+
+    <div class="form-group">
+      <label for="image">Project Thumbnail (JPEG, PNG, GIF, WebP, max 5MB)</label>
+      {% if project and project.thumbnail_url %}
+        <div style="margin-bottom: 8px;">
+          <img src="{{ project.thumbnail_url }}" alt="Thumbnail" style="max-height: 120px; border-radius: 6px; border: 1px solid var(--border-card);">
+        </div>
+      {% endif %}
+      <input type="file" id="image" name="image" accept="image/jpeg,image/png,image/gif,image/webp" {{ 'disabled' if not event_is_open }}>
+    </div>
+
+    {% if questions %}
+      <div style="margin-top: 24px; margin-bottom: 24px; padding-top: 16px; border-top: 1px solid var(--border-card);">
+        <h3 style="margin-bottom: 16px;">Required & Custom Questions</h3>
+        {% for q in questions %}
+          <div class="form-group">
+            <label for="question_{{ q.id }}">{{ q.label }} {% if q.required %}*{% endif %}</label>
+            {% set ans = (project.answers or {}).get(q.id, '') if project else '' %}
+            {% if q.question_type == 'select' and q.options %}
+              <select id="question_{{ q.id }}" name="question_{{ q.id }}" {{ 'disabled' if not event_is_open }}>
+                <option value="">-- Select an option --</option>
+                {% for opt in q.options %}
+                  <option value="{{ opt }}" {% if ans == opt %}selected{% endif %}>{{ opt }}</option>
+                {% endfor %}
+              </select>
+            {% else %}
+              <input type="text" id="question_{{ q.id }}" name="question_{{ q.id }}" value="{{ ans }}" {{ 'disabled' if not event_is_open }}>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if event_is_open %}
+      <div style="display: flex; gap: 16px; margin-top: 28px;">
+        <button type="submit" name="action" value="draft" class="btn btn-secondary">Save Draft</button>
+        <button type="submit" name="action" value="submit" class="btn btn-primary">Submit Final Project</button>
+      </div>
+    {% endif %}
+  </form>
+</div>
+{% endblock %}

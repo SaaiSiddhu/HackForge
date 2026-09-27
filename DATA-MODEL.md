@@ -1,162 +1,153 @@
 # Data Model
 
-This document distinguishes currently implemented Phase 1 entities from planned Phase 2–4 structures.
+This document outlines the implemented relational database schema for HackForge through Phase 2.
+
+The schema is managed via Alembic migrations (`0001_foundation.py`, `0002_add_indexes.py`, and `0003_phase2_core_workflows.py`) and backed by PostgreSQL 17.
 
 ---
 
-## Implemented Entities (Phase 1)
-
-The Phase 1 schema is managed via Alembic migrations (`0001_foundation.py` and `0002_add_indexes.py`) and backed by PostgreSQL 17.
+## Entity Relationship Overview
 
 ```
- +------------------------+          +------------------------+
- |         events         | 1      * |         tracks         |
- |------------------------|<---------|------------------------|
- | id: VARCHAR(100) [PK]  |          | id: VARCHAR(100) [PK]  |
- | name: VARCHAR(200)     |          | event_id: VARCHAR(100) |
- | submissions_close: UTC |          | name: VARCHAR(200)     |
- +------------------------+          +------------------------+
-      | 1            | 1                          ^
-      |              |                            |
-      | *            | *                          | 1
- +------------------------+                       |
- |         teams          |                       |
- |------------------------|                       |
- | id: VARCHAR(100) [PK]  |                       |
- | event_id: VARCHAR(100) |                       |
- | name: VARCHAR(200)     |                       |
- | members: JSON          |                       |
- +------------------------+                       |
-      ^ 1                                         |
-      |                                           |
-      | *                                         | *
- +------------------------------------------------------------+
- |                          projects                          |
- |------------------------------------------------------------|
- | id: VARCHAR(100) [PK]                                      |
- | event_id: VARCHAR(100) [FK -> events.id]                   |
- | team_id: VARCHAR(100) [FK -> teams.id]                     |
- | track_id: VARCHAR(100) [FK -> tracks.id]                   |
- | title: VARCHAR(200) [INDEX: ix_projects_title]             |
- | summary: TEXT                                              |
- | repo_url: TEXT                                             |
- | submitted_at: TIMESTAMPTZ [UTC]                            |
- +------------------------------------------------------------+
-      ^ 1                                         ^ 1
-      |                                           |
-      | *                                         | *
- +------------------------------------------------------------+
- |                          reviews                           |
- |------------------------------------------------------------|
- | judge_id: VARCHAR(100) [PK, FK -> judges.id]               |
- | project_id: VARCHAR(100) [PK, FK -> projects.id]           |
- | criteria: JSON                                             |
- | comment: TEXT                                              |
- +------------------------------------------------------------+
-      | *
-      |
-      v 1
- +------------------------+
- |         judges         |
- |------------------------|
- | id: VARCHAR(100) [PK]  |
- | event_id: VARCHAR(100) |
- | name: VARCHAR(200)     |
- | email: VARCHAR(320)    |
- | tracks: JSON           |
- +------------------------+
+                      +-----------------------------+
+                      |          accounts           |
+                      |-----------------------------|
+                      | id: VARCHAR(100) [PK]       |
+                      | email: VARCHAR(320) [UQ,IX] |
+                      | password_hash: VARCHAR(255) |
+                      | name: VARCHAR(200)          |
+                      | is_platform_admin: BOOLEAN  |
+                      | created_at: TIMESTAMPTZ     |
+                      +-----------------------------+
+                        | 1          | 1          | 1
+                        |            |            |
+                        | *          | *          | *
+        +---------------+            |            +-------------------+
+        |                            |                                |
+        v                            v                                v
++-----------------------+  +--------------------+         +-----------------------+
+|       sessions        |  |    event_roles     |         |   team_memberships    |
+|-----------------------|  |--------------------|         |-----------------------|
+| id: VARCHAR(100) [PK] |  | id: VARCHAR [PK]   |         | id: VARCHAR(100) [PK] |
+| token_hash: STR [UQ]  |  | event_id: FK       |         | team_id: FK -> teams  |
+| account_id: FK        |  | account_id: FK     |         | account_id: FK        |
+| expires_at: TIMESTAMP |  | role: VARCHAR(50)  |         | event_id: FK          |
+| created_at: TIMESTAMP |  | UQ(evt, acc, role) |         | role: captain/member  |
++-----------------------+  +--------------------+         | UQ(event_id, account) |
+                                       |                  +-----------------------+
+                                       |                               |
+                                       v                               v
++---------------------------------------------------+     +-----------------------+
+|                      events                       |     |         teams         |
+|---------------------------------------------------|     |-----------------------|
+| id: VARCHAR(100) [PK]                             | 1 * | id: VARCHAR(100) [PK] |
+| name: VARCHAR(200)                                |<----| event_id: FK -> events|
+| description: TEXT                                 |     | name: VARCHAR(200)    |
+| registration_open / close: TIMESTAMPTZ            |     | members: JSON         |
+| submissions_open / close: TIMESTAMPTZ             |     | captain_account_id: FK|
+| min_team_size / max_team_size: INT                |     +-----------------------+
+| prizes: JSON                                      |                 ^ 1
+| created_by_account_id: FK                         |                 |
++---------------------------------------------------+                 |
+  | 1               | 1                  | 1                          | *
+  |                 |                    |                 +----------------------+
+  v *               v *                  v *               |   team_invitations   |
++-------------+  +-----------------+  +-----------------+  |----------------------|
+|   tracks    |  | event_questions |  |event_audit_logs |  | id: VARCHAR(100) [PK]|
+|-------------|  |-----------------|  |-----------------|  | team_id: FK -> teams |
+| id: VARCHAR |  | id: VARCHAR[PK] |  | id: VARCHAR[PK] |  | email: VARCHAR(320)  |
+| event_id: FK|  | event_id: FK    |  | event_id: FK    |  | token: VARCHAR(64)   |
+| name: STR   |  | label: VARCHAR  |  | account_id: FK  |  | status: pending/acc  |
++-------------+  | type: VARCHAR   |  | action: VARCHAR |  | expires_at: TIMESTAMP|
+                 | required: BOOL  |  | payload: JSON   |  +----------------------+
+                 +-----------------+  +-----------------+
 ```
 
-### Table Definitions
-
-1. **`events`**:
-   - `id`: Primary key string (e.g., `evt_01`).
-   - `name`: Human-readable event title.
-   - `submissions_close`: UTC timestamp when submission edits close (`2026-03-01T18:00:00Z`).
-
-2. **`tracks`**:
-   - `id`: Primary key string (e.g., `trk_01`).
-   - `event_id`: Foreign key referencing `events.id`.
-   - `name`: Category name (e.g., `Developer tools`, `Security`, `Climate`).
-
-3. **`teams`**:
-   - `id`: Primary key string (e.g., `tm_01`).
-   - `event_id`: Foreign key referencing `events.id`.
-   - `name`: Team name.
-   - `members`: JSON array storing fixture participant email strings.
-
-4. **`judges`**:
-   - `id`: Primary key string (e.g., `jdg_01`).
-   - `event_id`: Foreign key referencing `events.id`.
-   - `name`: Full name.
-   - `email`: Contact email address.
-   - `tracks`: JSON array storing assigned track IDs.
-
-5. **`projects`**:
-   - `id`: Primary key string (e.g., `prj_01`). Preserves all 41 distinct fixture records, including duplicate project title `Dry Harbour` (`prj_07` and `prj_41`).
-   - `event_id`: Foreign key referencing `events.id`.
-   - `team_id`: Foreign key referencing `teams.id`.
-   - `track_id`: Foreign key referencing `tracks.id`.
-   - `title`: Project title.
-   - `summary`: Short description.
-   - `repo_url`: Source repository URL.
-   - `submitted_at`: UTC submission timestamp.
-   - **Indexes**: `ix_projects_title`, `ix_projects_track_id`, `ix_projects_team_id`.
-
-6. **`reviews`**:
-   - `judge_id` & `project_id`: Composite primary key referencing `judges.id` and `projects.id`.
-   - `criteria`: JSON dictionary of rubric criterion ratings.
-   - `comment`: Reviewer comments.
-
 ---
 
-## Important Architectural Notes on JSON Fields
+## Entity Details
 
-In Phase 1, `teams.members`, `judges.tracks`, and `reviews.criteria` store raw JSON structures imported directly from `fixtures.json`.
+### 1. `accounts`
+Stores platform user identity with Argon2id password hashes.
+- `id` (VARCHAR(100), PK): Account identifier (e.g. `acc_...`).
+- `email` (VARCHAR(320), UNIQUE, INDEX): Normalized lowercase user email address.
+- `password_hash` (VARCHAR(255)): Argon2id password hash string.
+- `name` (VARCHAR(200)): Display name.
+- `is_platform_admin` (BOOLEAN): Platform-wide superadmin privilege flag.
+- `created_at` (TIMESTAMPTZ, UTC): Account registration timestamp.
 
-> **CRITICAL**: These JSON fields are **purely import storage**. They are **not** an improvised authentication system, permission check, or dynamic scoring engine. No authorization or security logic relies on querying these JSON blobs.
+### 2. `sessions`
+High-entropy, revocable user sessions.
+- `id` (VARCHAR(100), PK): Session identifier.
+- `token_hash` (VARCHAR(64), UNIQUE, INDEX): SHA-256 hash of the 256-bit URL-safe token. The raw token is stored only in the client cookie.
+- `account_id` (VARCHAR(100), FK -> `accounts.id`, ON DELETE CASCADE): Session owner.
+- `expires_at` (TIMESTAMPTZ, UTC): Expiration date (default 7 days).
+- `created_at` (TIMESTAMPTZ, UTC): Creation timestamp.
 
----
+### 3. `event_roles`
+Event-scoped role permissions.
+- `id` (VARCHAR(100), PK)
+- `event_id` (VARCHAR(100), FK -> `events.id`, ON DELETE CASCADE)
+- `account_id` (VARCHAR(100), FK -> `accounts.id`, ON DELETE CASCADE)
+- `role` (VARCHAR(50)): Role name (`"organizer"`, `"judge"`, `"participant"`).
+- `created_at` (TIMESTAMPTZ, UTC)
+- **Constraint**: `UniqueConstraint("event_id", "account_id", "role")`.
 
-## Planned Normalization Roadmap (Phase 2 & Phase 3)
+### 4. `events`
+Hackathon configuration, schedule, and team sizing rules.
+- `id` (VARCHAR(100), PK): Event identifier (e.g. `evt_01`, `evt_open_demo`).
+- `name` (VARCHAR(200)): Hackathon name.
+- `description` (TEXT): Public overview of the event.
+- `registration_open`, `registration_close` (TIMESTAMPTZ, nullable): Registration window.
+- `submissions_open`, `submissions_close` (TIMESTAMPTZ): Submission window. Server rejects late submissions when `now > submissions_close`.
+- `min_team_size` (INT, default 1), `max_team_size` (INT, default 5): Capacity constraints.
+- `prizes` (JSON): Prize structure list.
+- `created_by_account_id` (VARCHAR(100), FK -> `accounts.id`, nullable).
 
-The following tables will be introduced in subsequent migrations to replace import JSON with normalized relational models:
+### 5. `teams` and `team_memberships`
+Teams and membership rosters.
+- `teams.id` (VARCHAR(100), PK): Team identifier (e.g. `tm_01`).
+- `teams.captain_account_id` (VARCHAR(100), FK -> `accounts.id`, nullable): Designated team captain.
+- `team_memberships`:
+  - `id` (VARCHAR(100), PK)
+  - `team_id` (VARCHAR(100), FK -> `teams.id`, ON DELETE CASCADE)
+  - `account_id` (VARCHAR(100), FK -> `accounts.id`, ON DELETE CASCADE)
+  - `event_id` (VARCHAR(100), FK -> `events.id`, ON DELETE CASCADE)
+  - `role` (VARCHAR(50)): `"captain"` or `"member"`.
+  - `joined_at` (TIMESTAMPTZ, UTC)
+  - **Single Team Constraint**: `UniqueConstraint("event_id", "account_id")` enforces at the database level that an account belongs to at most one team per event.
 
-1. **`accounts` (Phase 2)**:
-   - `id`: UUID primary key.
-   - `email`: Lowercase, unique string.
-   - `password_hash`: Secure argon2id or bcrypt hash.
-   - `full_name`: Display name.
-   - `is_platform_admin`: Boolean flag for platform administration.
+### 6. `team_invitations`
+Invitations to join a team.
+- `id` (VARCHAR(100), PK)
+- `team_id` (VARCHAR(100), FK -> `teams.id`, ON DELETE CASCADE)
+- `email` (VARCHAR(320), INDEX): Recipient email.
+- `token` (VARCHAR(64), UNIQUE, INDEX): Secret invite URL token.
+- `status` (VARCHAR(50)): `"pending"`, `"accepted"`, `"declined"`, `"expired"`.
+- `expires_at` (TIMESTAMPTZ, UTC): 7-day expiration.
 
-2. **`sessions` (Phase 2)**:
-   - `id`: Hash of cryptographically random 256-bit session token.
-   - `account_id`: FK to `accounts.id`.
-   - `created_at`: UTC timestamp.
-   - `expires_at`: UTC expiration timestamp.
-   - `revoked_at`: Nullable UTC revocation timestamp.
+### 7. `projects`
+Project submissions and drafts.
+- `id` (VARCHAR(100), PK): Project identifier.
+- `event_id` (VARCHAR(100), FK -> `events.id`)
+- `team_id` (VARCHAR(100), FK -> `teams.id`): Deliberately non-unique at DB level to preserve historical duplicate submissions `prj_07` and `prj_41`. Single project per team is enforced at the service layer for new participant submissions.
+- `track_id` (VARCHAR(100), FK -> `tracks.id`)
+- `title` (VARCHAR(200), INDEX): Project name.
+- `tagline` (VARCHAR(255)): One-line summary pitch.
+- `summary` (TEXT): High-level overview.
+- `description` (TEXT): Full architecture/markdown writeup.
+- `repo_url` (TEXT): Source code repository URL.
+- `demo_url` (TEXT): Live deployment URL.
+- `video_url` (TEXT): Walkthrough video URL.
+- `status` (VARCHAR(50), INDEX): `"draft"` or `"submitted"`. Public gallery filters strictly for `"submitted"`.
+- `thumbnail_url` (TEXT): Local upload URL (e.g. `/uploads/abc.png`).
+- `version` (INT): Incremented on each update.
+- `submitted_at` (TIMESTAMPTZ, UTC): Final submission timestamp.
+- `updated_at` (TIMESTAMPTZ, UTC): Last draft update timestamp.
 
-3. **`event_roles` (Phase 2)**:
-   - Composite PK: `(event_id, account_id, role)`.
-   - Supported roles: `organizer`, `judge`, `participant`.
-
-4. **`team_memberships` (Phase 2)**:
-   - Normalizes `teams.members` into relational records linking `accounts` to `teams` via invitation tokens.
-
-5. **`rubrics` & `rubric_criteria` (Phase 3)**:
-   - Normalizes `reviews.criteria` into configured scoring dimensions: `id`, `event_id`, `name`, `weight` (float), `min_score` (int), `max_score` (int).
-
-6. **`judge_assignments` (Phase 3)**:
-   - Explicit assignment mapping `(event_id, judge_id, project_id)` enforcing judge isolation.
-
----
-
-## Cross-Event Invariants
-
-The data model enforces the following relational invariants:
-
-1. **Project Scope Invariant**: A project must belong to the same event as both its team and its track:
-   $$\text{project.event\_id} = \text{team.event\_id} = \text{track.event\_id}$$
-2. **Review Scope Invariant**: A review must only connect a judge and a project registered in the same event:
-   $$\text{judge.event\_id} = \text{project.event\_id}$$
-3. **Immutability of Closed Submissions**: Projects with $\text{event.submissions\_close} < \text{now(UTC)}$ reject modification.
+### 8. `reviews` (Phase 1 Baseline Preserved)
+Judge scoring records.
+- `judge_id` (VARCHAR(100), PK, FK -> `judges.id`)
+- `project_id` (VARCHAR(100), PK, FK -> `projects.id`)
+- `criteria` (JSON): Category scores (e.g. `{"functionality": 5}`).
+- `comment` (TEXT): Private feedback.

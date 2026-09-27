@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Register · HackForge{% endblock %}
+
+{% block content %}
+<div class="auth-container card">
+  <div class="eyebrow">Get Started</div>
+  <h1 style="font-size: 28px; margin: 8px 0 20px;">Create Account</h1>
+
+  {% if error %}
+    <div class="alert alert-danger">{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/register">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div class="form-group">
+      <label for="name">Full Name</label>
+      <input type="text" id="name" name="name" value="{{ name or '' }}" required autofocus>
+    </div>
+
+    <div class="form-group">
+      <label for="email">Email Address</label>
+      <input type="email" id="email" name="email" value="{{ email or '' }}" required>
+    </div>
+
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" minlength="8" required>
+      <span class="hint">Minimum 8 characters. Hashed securely with Argon2id.</span>
+    </div>
+
+    <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 8px;">Create Account</button>
+  </form>
+
+  <p style="margin-top: 24px; font-size: 13px; color: var(--text-muted); text-align: center;">
+    Already registered? <a href="/login" style="color: var(--accent);">Sign in</a>
+  </p>
+</div>
+{% endblock %}

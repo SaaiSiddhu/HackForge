@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block title %}{{ team.name }} · Team Roster{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/events">← Back to Events</a>
+</div>
+
+<div class="project-header">
+  <div class="eyebrow">{{ event.name }}</div>
+  <h1 style="margin: 8px 0 12px;">Team: {{ team.name }}</h1>
+  <p class="intro">Manage your roster, generate invite links for teammates, and submit your project.</p>
+</div>
+
+{% if success_msg %}
+  <div class="alert alert-success">{{ success_msg }}</div>
+{% endif %}
+{% if error_msg %}
+  <div class="alert alert-danger">{{ error_msg }}</div>
+{% endif %}
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+  <!-- Roster -->
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+      <h2>Roster ({{ members|length }} / {{ event.max_team_size }})</h2>
+      <a href="/events/{{ event.id }}/submit" class="btn btn-primary" style="padding: 8px 14px; font-size: 13px;">Manage Project</a>
+    </div>
+
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th>Role</th>
+            <th>Joined</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in members %}
+            <tr>
+              <td><strong>{{ m.account.name if m.account else m.role }}</strong></td>
+              <td><span class="status-badge {{ 'status-submitted' if m.role == 'captain' else 'status-draft' }}">{{ m.role }}</span></td>
+              <td style="font-size: 12px; color: var(--text-muted);">{{ m.joined_at.strftime('%Y-%m-%d') }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Invitations -->
+  <div>
+    {% if is_captain and members|length < event.max_team_size %}
+      <div class="card">
+        <h2>Invite Teammate</h2>
+        <form method="POST" action="/teams/{{ team.id }}/invite">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+          <div class="form-group">
+            <label for="email">Teammate Email</label>
+            <input type="email" id="email" name="email" placeholder="teammate@example.com" required>
+          </div>
+
+          <button type="submit" class="btn btn-secondary">Generate Invite Link</button>
+        </form>
+      </div>
+    {% endif %}
+
+    <div class="card">
+      <h2>Pending Invitations</h2>
+      {% if invitations %}
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Invite URL</th>
+                <th>Status</th>
+                {% if is_captain %}<th>Action</th>{% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for inv in invitations %}
+                <tr>
+                  <td>{{ inv.email }}</td>
+                  <td><a href="/invitations/{{ inv.token }}" class="external-link" style="font-size: 12px;">Accept Link</a></td>
+                  <td><span class="status-badge status-draft">{{ inv.status }}</span></td>
+                  {% if is_captain %}
+                    <td>
+                      {% if inv.status == 'pending' %}
+                        <form method="POST" action="/teams/{{ team.id }}/invitations/{{ inv.id }}/revoke" style="display:inline;">
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                          <button type="submit" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px; color: #ff6b6b; border-color: #ff6b6b;">Revoke</button>
+                        </form>
+                      {% endif %}
+                    </td>
+                  {% endif %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p style="color: var(--text-muted); font-size: 14px;">No pending invitations.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

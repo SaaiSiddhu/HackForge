@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}Create New Event · HackForge{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/events">← Back to Events</a>
+</div>
+
+<div class="project-header">
+  <div class="eyebrow">Platform Administration & Organization</div>
+  <h1 style="margin: 8px 0 12px;">Create Hackathon Event</h1>
+  <p class="intro">Configure dates, team capacity, tracks, and prizes for a new competition.</p>
+</div>
+
+{% if error_msg %}
+  <div class="alert alert-danger">{{ error_msg }}</div>
+{% endif %}
+
+<div class="card" style="max-width: 720px;">
+  <form method="POST" action="/events/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div class="form-group">
+      <label for="event_id">Event ID * (e.g. evt_fall2026)</label>
+      <input type="text" id="event_id" name="event_id" value="{{ values.event_id if values else '' }}" placeholder="evt_sample" required>
+      <span class="hint">Unique alphanumeric identifier for the event.</span>
+    </div>
+
+    <div class="form-group">
+      <label for="name">Event Name *</label>
+      <input type="text" id="name" name="name" value="{{ values.name if values else '' }}" placeholder="HackForge Autumn Hackathon 2026" required>
+    </div>
+
+    <div class="form-group">
+      <label for="description">Description</label>
+      <textarea id="description" name="description" rows="3">{{ values.description if values else '' }}</textarea>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+      <div class="form-group">
+        <label for="min_team_size">Min Team Size *</label>
+        <input type="number" id="min_team_size" name="min_team_size" value="{{ values.min_team_size if values else 1 }}" min="1" required>
+      </div>
+      <div class="form-group">
+        <label for="max_team_size">Max Team Size *</label>
+        <input type="number" id="max_team_size" name="max_team_size" value="{{ values.max_team_size if values else 5 }}" min="1" required>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+      <div class="form-group">
+        <label for="registration_open">Registration Open (Optional)</label>
+        <input type="text" id="registration_open" name="registration_open" placeholder="2026-09-01T00:00:00+00:00">
+        <span class="hint">ISO 8601 UTC</span>
+      </div>
+      <div class="form-group">
+        <label for="registration_close">Registration Close (Optional)</label>
+        <input type="text" id="registration_close" name="registration_close" placeholder="2026-10-01T23:59:59+00:00">
+        <span class="hint">ISO 8601 UTC</span>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+      <div class="form-group">
+        <label for="submissions_open">Submissions Open (Optional)</label>
+        <input type="text" id="submissions_open" name="submissions_open" placeholder="2026-09-15T00:00:00+00:00">
+        <span class="hint">ISO 8601 UTC</span>
+      </div>
+      <div class="form-group">
+        <label for="submissions_close">Submissions Deadline * (Required)</label>
+        <input type="text" id="submissions_close" name="submissions_close" value="{{ values.submissions_close if values else '' }}" placeholder="2026-10-31T23:59:59+00:00" required>
+        <span class="hint">ISO 8601 UTC</span>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="tracks">Tracks (One per line)</label>
+      <textarea id="tracks" name="tracks" rows="3" placeholder="AI & Machine Learning&#10;Web3 & Infrastructure&#10;Developer Productivity"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label for="prizes">Prizes (One per line)</label>
+      <textarea id="prizes" name="prizes" rows="2" placeholder="1st Place - $5,000&#10;2nd Place - $2,500"></textarea>
+    </div>
+
+    <div style="margin-top: 24px;">
+      <button type="submit" class="btn btn-primary">Create Event</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

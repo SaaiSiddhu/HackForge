@@ -5,11 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /portal
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 RUN useradd --create-home --shell /bin/bash portal && \
-    mkdir -p /portal && \
+    mkdir -p /portal/uploads && \
     chown -R portal:portal /portal
 
 COPY --chown=portal:portal . .

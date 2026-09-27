@@ -1,27 +1,18 @@
-# DOGFOOD 2026 Configuration for HackForge (Phase 1 Foundation)
-#
-# IMPORTANT: Phase 1 establishes the tested foundation (FastAPI, PostgreSQL,
-# migrations, fixture import, public gallery, search, project details).
-# Authentication, submissions, and judging are Phase 2-4 milestones.
-# Per specification, no tiers are claimed until workflows are fully implemented.
+# DOGFOOD 2026 Configuration for HackForge (Phase 2 T1 Workflows)
 
 [portal]
 base_url = "http://localhost:8080"
 
 [tiers]
-claimed = []
+claimed = ["T1"]
 pitch = "HackForge: Build. Submit. Judge. Self-hosted hackathon submission and judging platform."
 
 [auth]
-# Phase 1 does not implement authentication. Placeholders for Phase 2:
-# organizer   = "Cookie: session=org_demo"
-# judge_a     = "Cookie: session=jdg_a_demo"
-# judge_b     = "Cookie: session=jdg_b_demo"
-# participant = "Cookie: session=prt_demo"
+organizer   = "Authorization: Bearer org_demo"
+judge_a     = "Authorization: Bearer jdg_a_demo"
+judge_b     = "Authorization: Bearer jdg_b_demo"
+participant = "Authorization: Bearer prt_demo"
 
 [routes]
 gallery = "/projects"
-# submit       = "/projects/new"       # Planned Phase 2
-# judge_scores = "/api/judge/scores"   # Planned Phase 3
-# peer_scores  = "/api/judge/scores?judge=judge_a" # Planned Phase 3
-# csv_export   = "/api/export.csv"     # Planned Phase 4
+submit  = "/events/evt_01/submit"

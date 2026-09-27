@@ -21,7 +21,7 @@ def build_engine(database_url: str | None = None):
     if url.startswith("sqlite"):
         if settings.environment != "testing":
             raise RuntimeError(
-                f"SQLite URL '{url}' rejected. SQLite is restricted to ENVIRONMENT=testing."
+                f"SQLite URL rejected. SQLite is restricted to ENVIRONMENT=testing."
             )
         return create_engine(
             url,
@@ -45,11 +45,13 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def get_db() -> Generator[Session, None, None]:
-    """FastAPI dependency yielding a managed database session with rollback on exception."""
+    """FastAPI dependency yielding a managed database session with rollback on exception.
+    
+    Transactions must be explicitly managed and committed by caller/service handlers.
+    """
     session = SessionLocal()
     try:
         yield session
-        session.commit()
     except Exception:
         session.rollback()
         raise
@@ -58,11 +60,11 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def check_database_health() -> bool:
-    """Execute a simple query to verify database connectivity."""
+    """Execute a simple query to verify database connectivity without leaking credentials."""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return True
-    except Exception as exc:
-        logger.warning(f"Database health check failed: {exc}")
+    except Exception:
+        logger.warning("Database health check probe failed (database unreachable or unhealthy)")
         return False

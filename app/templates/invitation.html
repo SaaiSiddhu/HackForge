@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}Join {{ team.name }} · Team Invitation{% endblock %}
+
+{% block content %}
+<div class="auth-container card" style="max-width: 520px;">
+  <div class="eyebrow">Team Invitation</div>
+  <h1 style="font-size: 28px; margin: 8px 0 16px;">Join {{ team.name }}</h1>
+  <p style="color: var(--text-secondary); font-size: 15px; margin-bottom: 24px;">
+    You have been invited to join team <strong>{{ team.name }}</strong> for <strong>{{ event.name }}</strong>.
+  </p>
+
+  {% if error %}
+    <div class="alert alert-danger">{{ error }}</div>
+  {% endif %}
+
+  {% if current_account %}
+    <form method="POST" action="/invitations/{{ invitation.token }}/accept">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 20px;">
+        Accepting as <strong>{{ current_account.name }}</strong> ({{ current_account.email }}).
+      </p>
+      <button type="submit" class="btn btn-primary" style="width: 100%;">Accept Invitation</button>
+    </form>
+  {% else %}
+    <div class="alert alert-info">
+      Please <a href="/login?next=/invitations/{{ invitation.token }}" style="color: inherit; font-weight: 700;">log in</a> or <a href="/register?next=/invitations/{{ invitation.token }}" style="color: inherit; font-weight: 700;">register</a> to accept this invitation.
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

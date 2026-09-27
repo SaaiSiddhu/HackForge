@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Manage {{ event.name }} · HackForge{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/events">← Back to Events</a>
+</div>
+
+<div class="project-header">
+  <div class="eyebrow">Organizer Dashboard</div>
+  <h1 style="margin: 8px 0 12px;">{{ event.name }}</h1>
+  <p class="intro">Configure deadlines, team capacity, and review system audit records.</p>
+</div>
+
+{% if success_msg %}
+  <div class="alert alert-success">{{ success_msg }}</div>
+{% endif %}
+{% if error_msg %}
+  <div class="alert alert-danger">{{ error_msg }}</div>
+{% endif %}
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+  <!-- Settings Form -->
+  <div class="card">
+    <h2>Event Configuration</h2>
+    <form method="POST" action="/events/{{ event.id }}/manage">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      <div class="form-group">
+        <label for="name">Event Name</label>
+        <input type="text" id="name" name="name" value="{{ event.name }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="description">Description</label>
+        <textarea id="description" name="description">{{ event.description or '' }}</textarea>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+        <div class="form-group">
+          <label for="min_team_size">Min Team Size</label>
+          <input type="number" id="min_team_size" name="min_team_size" value="{{ event.min_team_size }}" min="1">
+        </div>
+        <div class="form-group">
+          <label for="max_team_size">Max Team Size</label>
+          <input type="number" id="max_team_size" name="max_team_size" value="{{ event.max_team_size }}" min="1">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="submissions_close">Submissions Deadline (ISO UTC)</label>
+        <input type="text" id="submissions_close" name="submissions_close" value="{{ event.submissions_close.isoformat() }}" required>
+        <span class="hint">Format: YYYY-MM-DDTHH:MM:SS+00:00</span>
+      </div>
+
+      <button type="submit" class="btn btn-primary">Save Configuration</button>
+    </form>
+  </div>
+
+  <!-- Audit Log & Overview -->
+  <div>
+    <div class="card">
+      <h2>Tracks ({{ tracks|length }})</h2>
+      <ul style="padding-left: 20px; margin: 12px 0; color: var(--text-secondary);">
+        {% for track in tracks %}
+          <li><strong>{{ track.name }}</strong> <code style="font-size: 12px;">{{ track.id }}</code></li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>Recent Audit Log</h2>
+      {% if audit_logs %}
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Time (UTC)</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for log in audit_logs %}
+                <tr>
+                  <td><code>{{ log.action }}</code></td>
+                  <td style="font-size: 12px; color: var(--text-muted);">{{ log.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                  <td style="font-size: 12px;"><pre style="margin: 0; white-space: pre-wrap; font-family: inherit;">{{ log.payload }}</pre></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p style="color: var(--text-muted); font-size: 14px;">No audit events recorded yet.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

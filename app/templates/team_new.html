@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Create Team · {{ event.name }}{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/events">← Back to Events</a>
+</div>
+
+<div class="auth-container card" style="max-width: 520px;">
+  <div class="eyebrow">{{ event.name }}</div>
+  <h1 style="font-size: 28px; margin: 8px 0 16px;">Form a Team</h1>
+  <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 24px;">
+    Team capacity: {{ event.min_team_size }} to {{ event.max_team_size }} members. You will be assigned as Captain.
+  </p>
+
+  {% if error %}
+    <div class="alert alert-danger">{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/events/{{ event.id }}/teams/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div class="form-group">
+      <label for="name">Team Name</label>
+      <input type="text" id="name" name="name" placeholder="e.g. Byte Builders" required autofocus>
+    </div>
+
+    <button type="submit" class="btn btn-primary" style="width: 100%;">Create Team & Continue</button>
+  </form>
+</div>
+{% endblock %}
