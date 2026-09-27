@@ -1,13 +1,13 @@
-"""Judging services: invitations, rubrics, assignments, reviews, and progress tracking."""
-
 from datetime import datetime, timedelta, timezone
 import hashlib
+import logging
 import math
 import secrets
 from typing import Any, Optional
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -30,35 +30,35 @@ from .models import (
 )
 from .services import ConcurrencyConflictError, ensure_utc, normalize_email, record_audit_log
 
+logger = logging.getLogger(__name__)
+
 
 # --- Centralized Judge Identity & Authorization ---
 
 
 def get_account_judge_for_event(db: Session, event_id: str, account_id: str) -> Optional[Judge]:
-    """Retrieve the Judge record linked to an account within an event, or None."""
-    # First check direct account_id link
-    judge = db.scalars(
+    """Retrieve the Judge record explicitly linked to an account within an event, or None.
+
+    Strictly read-only: does NOT mutate database state and does NOT confer identity
+    merely based on an email match.
+    """
+    return db.scalars(
         select(Judge).where(Judge.event_id == event_id, Judge.account_id == account_id)
     ).first()
-    if judge:
-        return judge
 
-    # Fallback to email match if account_id was not yet explicitly linked
-    account = db.get(Account, account_id)
-    if account:
-        judge_by_email = db.scalars(
-            select(Judge).where(
-                Judge.event_id == event_id,
-                func.lower(Judge.email) == account.email.lower(),
-            )
-        ).first()
-        if judge_by_email:
-            # Associate account_id for future fast lookups
-            judge_by_email.account_id = account.id
-            db.commit()
-            return judge_by_email
 
-    return None
+def is_judge_permitted_for_track(judge: Judge, track_id: str) -> bool:
+    """Check if a judge is authorized to evaluate a project in track_id.
+
+    Policy:
+    - If judge.tracks contains "*", the judge has explicit unrestricted access across all tracks.
+    - If judge.tracks is non-empty, track_id must be in judge.tracks.
+    - If judge.tracks is empty ([] or None), the judge has NO track permissions (e.g. revoked).
+    """
+    tracks = judge.tracks or []
+    if "*" in tracks:
+        return True
+    return track_id in tracks
 
 
 def is_account_event_organizer(db: Session, event_id: str, account_id: str) -> bool:
@@ -99,14 +99,17 @@ def create_judge_invitation(
 
     # Validate that requested tracks belong to the event
     if tracks:
-        valid_tracks = db.scalars(
-            select(Track.id).where(Track.event_id == event_id, Track.id.in_(tracks))
-        ).all()
-        if len(valid_tracks) != len(set(tracks)):
-            raise ValueError("One or more selected tracks are invalid for this event.")
+        if "*" in tracks or tracks == ["*"]:
+            valid_tracks = ["*"]
+        else:
+            valid_tracks = list(db.scalars(
+                select(Track.id).where(Track.event_id == event_id, Track.id.in_(tracks))
+            ).all())
+            if len(valid_tracks) != len(set(tracks)):
+                raise ValueError("One or more selected tracks are invalid for this event.")
     else:
-        # Default to all tracks if none explicitly selected
-        valid_tracks = db.scalars(select(Track.id).where(Track.event_id == event_id)).all()
+        # Explicit representation of "all tracks"
+        valid_tracks = ["*"]
 
     # Generate high-entropy token and hash
     raw_token = secrets.token_urlsafe(32)
@@ -183,26 +186,48 @@ def accept_judge_invitation(db: Session, raw_token: str, account: Account) -> Ju
     # Check if judge record already exists for this event and account
     judge = get_account_judge_for_event(db, event_id, account.id)
     if not judge:
-        # Create new Judge record
-        judge = Judge(
-            id=f"jdg_{uuid.uuid4().hex[:10]}",
-            event_id=event_id,
-            account_id=account.id,
-            name=account.name,
-            email=account.email,
-            tracks=list(invitation.tracks),
-        )
-        db.add(judge)
-        db.flush()
+        # Check if an unlinked imported judge record exists matching account.email
+        existing_judge_by_email = db.scalars(
+            select(Judge).where(
+                Judge.event_id == event_id,
+                func.lower(Judge.email) == account.email.lower(),
+            )
+        ).first()
+
+        if existing_judge_by_email:
+            if existing_judge_by_email.account_id and existing_judge_by_email.account_id != account.id:
+                raise ValueError(
+                    f"Conflict: Judge record for '{account.email}' is already linked to another account."
+                )
+            # Explicit authorized linking within invitation acceptance transaction
+            existing_judge_by_email.account_id = account.id
+            judge = existing_judge_by_email
+        else:
+            # Create new Judge record
+            judge = Judge(
+                id=f"jdg_{uuid.uuid4().hex[:10]}",
+                event_id=event_id,
+                account_id=account.id,
+                name=account.name,
+                email=account.email,
+                tracks=list(invitation.tracks or []),
+            )
+            db.add(judge)
+            db.flush()
+
+    # Track permissions merging
+    inv_tracks = invitation.tracks or []
+    existing_tracks = judge.tracks or []
+    if "*" in inv_tracks or "*" in existing_tracks:
+        judge.tracks = ["*"]
     else:
-        # Merge permitted tracks
-        existing_tracks = set(judge.tracks or [])
-        merged_tracks = list(existing_tracks.union(set(invitation.tracks or [])))
-        judge.tracks = merged_tracks
-        judge.account_id = account.id
+        judge.tracks = list(set(existing_tracks).union(set(inv_tracks)))
+    judge.account_id = account.id
 
     # Sync judge_tracks table
-    for trk_id in judge.tracks:
+    all_event_tracks = db.scalars(select(Track.id).where(Track.event_id == event_id)).all()
+    tracks_to_sync = all_event_tracks if "*" in judge.tracks else judge.tracks
+    for trk_id in tracks_to_sync:
         jt = db.scalars(
             select(JudgeTrackPermission).where(
                 JudgeTrackPermission.judge_id == judge.id,
@@ -551,8 +576,7 @@ def assign_judge_to_project(
         raise ValueError("Cannot assign judges to draft (unsubmitted) projects.")
 
     # Track permission check
-    permitted_tracks = set(judge.tracks or [])
-    if permitted_tracks and project.track_id not in permitted_tracks:
+    if not is_judge_permitted_for_track(judge, project.track_id):
         raise ValueError(f"Judge '{judge.name}' is not permitted to evaluate track '{project.track_id}'.")
 
     # Own team conflict exclusion
@@ -694,8 +718,7 @@ def run_batch_assignment(
                 continue
 
             # Track permission
-            tracks = set(judge.tracks or [])
-            if tracks and project.track_id not in tracks:
+            if not is_judge_permitted_for_track(judge, project.track_id):
                 continue
 
             # Team conflict
@@ -776,6 +799,19 @@ def get_judge_assigned_projects(
     output = []
 
     for asgn, proj in results:
+        # Track permission check
+        if not is_judge_permitted_for_track(judge, proj.track_id):
+            continue
+
+        # Own-team conflict check
+        if judge.account_id and db.scalars(
+            select(TeamMembership).where(
+                TeamMembership.team_id == proj.team_id,
+                TeamMembership.account_id == judge.account_id,
+            )
+        ).first() is not None:
+            continue
+
         # Load review if present
         rev = db.scalars(
             select(Review).where(Review.judge_id == judge.id, Review.project_id == proj.id)
@@ -833,8 +869,7 @@ def get_project_for_judge_evaluation(
         raise PermissionError(f"Forbidden: Judge '{judge.id}' is not assigned to project '{project_id}'.")
 
     # 2. Track permission check
-    permitted_tracks = set(judge.tracks or [])
-    if permitted_tracks and project.track_id not in permitted_tracks:
+    if not is_judge_permitted_for_track(judge, project.track_id):
         raise PermissionError(f"Forbidden: Judge track permissions do not cover track '{project.track_id}'.")
 
     # 3. Own-team conflict check
@@ -848,39 +883,60 @@ def get_project_for_judge_evaluation(
         if is_teammate:
             raise PermissionError("Forbidden: Conflict of interest (judge is a member of the project team).")
 
-    # 4. Active rubric
-    rubric = get_active_rubric(db, event_id)
-    if not rubric:
-        raise ValueError(f"No active evaluation rubric configured for event '{event_id}'.")
-
-    # 5. Existing review
+    # 4. Review & bound rubric
     review = db.scalars(
         select(Review).where(Review.judge_id == judge.id, Review.project_id == project_id)
     ).first()
 
+    if review and review.rubric_id:
+        rubric = db.get(Rubric, review.rubric_id)
+        if not rubric:
+            rubric = get_active_rubric(db, event_id)
+    else:
+        rubric = get_active_rubric(db, event_id)
+
+    if not rubric:
+        raise ValueError(f"No active evaluation rubric configured for event '{event_id}'.")
+
     return project, review, rubric
 
 
-def save_judge_evaluation(
+def _record_conflict_safely(
     db: Session,
     event_id: str,
-    judge: Judge,
-    project_id: str,
-    criteria_inputs: dict[str, Any],
-    comment: str,
-    is_final: bool,
-    expected_version: Optional[int],
-    actor: Account,
-) -> Review:
-    """Save draft or finalize review with OCC row locking, full rubric validation, and atomic audit logging."""
-    project, existing_review, rubric = get_project_for_judge_evaluation(db, event_id, judge, project_id)
+    actor_id: Optional[str],
+    payload: dict[str, Any],
+) -> None:
+    """Record a review.conflict audit log entry using a separate transaction without committing caller session."""
+    if not actor_id:
+        return
+    try:
+        bind = db.get_bind()
+        with Session(bind) as audit_db:
+            audit_log = EventAuditLog(
+                id=f"log_{uuid.uuid4().hex[:12]}",
+                event_id=event_id,
+                account_id=actor_id,
+                action="review.conflict",
+                payload=payload,
+                created_at=datetime.now(timezone.utc),
+            )
+            audit_db.add(audit_log)
+            audit_db.commit()
+    except Exception as e:
+        logger.warning(f"Could not record conflict audit log: {e}")
 
+
+def _validate_criteria_scores(
+    rubric: Rubric,
+    criteria_inputs: dict[str, Any],
+    is_final: bool,
+) -> dict[str, float]:
+    """Validate criteria scores against the specified rubric."""
     rubric_criteria_by_key = {c.key: c for c in rubric.criteria}
     cleaned_scores = {}
 
-    # Validation
     if is_final:
-        # All criteria must be answered with valid numbers within bounds
         for crit in rubric.criteria:
             raw_val = criteria_inputs.get(crit.key)
             if raw_val is None or (isinstance(raw_val, str) and not raw_val.strip()):
@@ -899,13 +955,11 @@ def save_judge_evaluation(
                 )
             cleaned_scores[crit.key] = score_f
 
-        # Reject unknown criteria not in rubric
         for k in criteria_inputs:
             if k not in rubric_criteria_by_key:
                 raise ValueError(f"Unknown criterion key '{k}' not found in active rubric.")
 
     else:
-        # Draft: partial scores allowed, but any provided score must be valid
         for k, v in criteria_inputs.items():
             if v is None or (isinstance(v, str) and not v.strip()):
                 continue
@@ -926,52 +980,153 @@ def save_judge_evaluation(
                 )
             cleaned_scores[k] = score_f
 
-    raw_score = calculate_raw_score(rubric, cleaned_scores)
-    now = datetime.now(timezone.utc)
-    target_status = "finalized" if is_final else "draft"
+    return cleaned_scores
 
-    # Row locking on Review
+
+def save_judge_evaluation(
+    db: Session,
+    event_id: str,
+    judge: Judge,
+    project_id: str,
+    criteria_inputs: dict[str, Any],
+    comment: str,
+    is_final: bool,
+    expected_version: Optional[int],
+    actor: Account,
+    form_rubric_id: Optional[str] = None,
+) -> Review:
+    """Save draft or finalize review with OCC row locking, full rubric validation, and atomic audit logging."""
+    project = db.get(Project, project_id)
+    if not project or project.event_id != event_id:
+        raise ValueError(f"Project '{project_id}' not found for event '{event_id}'.")
+
+    if project.status != "submitted":
+        raise ValueError("Cannot evaluate unsubmitted project.")
+
+    # Assignment check with parent row lock to coordinate simultaneous creation
+    asgn = db.scalars(
+        select(JudgeAssignment)
+        .where(
+            JudgeAssignment.event_id == event_id,
+            JudgeAssignment.judge_id == judge.id,
+            JudgeAssignment.project_id == project_id,
+        )
+        .with_for_update()
+    ).first()
+    if not asgn:
+        raise PermissionError(f"Forbidden: Judge '{judge.id}' is not assigned to project '{project_id}'.")
+
+    # Track permission check
+    if not is_judge_permitted_for_track(judge, project.track_id):
+        raise PermissionError(f"Forbidden: Judge track permissions do not cover track '{project.track_id}'.")
+
+    # Own-team conflict check
+    if judge.account_id:
+        is_teammate = db.scalars(
+            select(TeamMembership).where(
+                TeamMembership.team_id == project.team_id,
+                TeamMembership.account_id == judge.account_id,
+            )
+        ).first() is not None
+        if is_teammate:
+            raise PermissionError("Forbidden: Conflict of interest (judge is a member of the project team).")
+
+    # Acquire lock on Review row if it exists, refreshing from DB
     stmt = (
         select(Review)
         .where(Review.judge_id == judge.id, Review.project_id == project_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     locked_review = db.scalars(stmt).first()
+    if locked_review:
+        db.refresh(locked_review)
+
+    now = datetime.now(timezone.utc)
+    target_status = "finalized" if is_final else "draft"
 
     if locked_review:
-        # OCC Check
-        if expected_version is None or locked_review.version != expected_version:
-            if actor:
-                record_audit_log(
-                    db,
-                    event_id=event_id,
-                    action="review.conflict",
-                    payload={
-                        "review_id": f"{judge.id}:{project_id}",
-                        "judge_id": judge.id,
-                        "project_id": project_id,
-                        "expected_version": expected_version,
-                        "current_version": locked_review.version,
-                    },
-                    account_id=actor.id,
-                    commit=True,
-                )
+        # Require expected_version for edits
+        if expected_version is None:
+            _record_conflict_safely(db, event_id, actor.id if actor else None, {
+                "review_id": f"{judge.id}:{project_id}",
+                "judge_id": judge.id,
+                "project_id": project_id,
+                "expected_version": None,
+                "current_version": locked_review.version,
+                "reason": "missing_expected_version",
+            })
+            db.rollback()
+            raise ConcurrencyConflictError("Conflict: expected_version is required when modifying an existing review.")
+
+        if locked_review.version != expected_version:
+            _record_conflict_safely(db, event_id, actor.id if actor else None, {
+                "review_id": f"{judge.id}:{project_id}",
+                "judge_id": judge.id,
+                "project_id": project_id,
+                "expected_version": expected_version,
+                "current_version": locked_review.version,
+                "reason": "stale_version",
+            })
+            db.rollback()
             raise ConcurrencyConflictError(
                 f"Conflict: Review has been modified (current version {locked_review.version}, expected {expected_version}). Please reload."
             )
+
+        # Rubric lifecycle: Existing review is bound to its original rubric version!
+        if locked_review.rubric_id:
+            rubric = db.get(Rubric, locked_review.rubric_id)
+            if not rubric:
+                rubric = get_active_rubric(db, event_id)
+        else:
+            rubric = get_active_rubric(db, event_id)
+
+        if not rubric:
+            raise ValueError(f"No evaluation rubric configured for event '{event_id}'.")
+
+        # Stale rubric check
+        if form_rubric_id and rubric and form_rubric_id != rubric.id:
+            raise ValueError(
+                f"Rubric conflict: Review is bound to rubric '{rubric.id}', but form submitted '{form_rubric_id}'. Please reload."
+            )
+
+        cleaned_scores = _validate_criteria_scores(rubric, criteria_inputs, is_final)
+        raw_score = calculate_raw_score(rubric, cleaned_scores)
 
         locked_review.criteria = cleaned_scores
         locked_review.comment = comment.strip()
         locked_review.status = target_status
         locked_review.raw_score = raw_score
-        locked_review.rubric_id = rubric.id
+        locked_review.rubric_id = rubric.id  # Preserve bound rubric
         locked_review.version = expected_version + 1
         locked_review.updated_at = now
         review = locked_review
+
     else:
-        # New review creation (expected_version must be None or 0)
+        # New review creation: expected_version must be None or 0
         if expected_version not in (None, 0):
+            _record_conflict_safely(db, event_id, actor.id if actor else None, {
+                "review_id": f"{judge.id}:{project_id}",
+                "judge_id": judge.id,
+                "project_id": project_id,
+                "expected_version": expected_version,
+                "current_version": 0,
+                "reason": "unexpected_version_for_new",
+            })
+            db.rollback()
             raise ConcurrencyConflictError("Conflict: Cannot specify expected_version for a new review.")
+
+        rubric = get_active_rubric(db, event_id)
+        if not rubric:
+            raise ValueError(f"No active evaluation rubric configured for event '{event_id}'.")
+
+        if form_rubric_id and form_rubric_id != rubric.id:
+            raise ValueError(
+                f"Rubric conflict: Active rubric is '{rubric.id}', but form submitted '{form_rubric_id}'. Please reload."
+            )
+
+        cleaned_scores = _validate_criteria_scores(rubric, criteria_inputs, is_final)
+        raw_score = calculate_raw_score(rubric, cleaned_scores)
 
         review = Review(
             judge_id=judge.id,
@@ -988,9 +1143,24 @@ def save_judge_evaluation(
         )
         db.add(review)
 
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # Simultaneous creation conflict caught!
+        db.rollback()
+        _record_conflict_safely(db, event_id, actor.id if actor else None, {
+            "review_id": f"{judge.id}:{project_id}",
+            "judge_id": judge.id,
+            "project_id": project_id,
+            "expected_version": expected_version,
+            "reason": "simultaneous_creation_integrity_error",
+        })
+        raise ConcurrencyConflictError(
+            "Conflict: A review for this project was already created by another session. Please reload."
+        )
 
     # Sync review_criterion_scores
+    rubric_criteria_by_key = {c.key: c for c in rubric.criteria}
     for k, val in cleaned_scores.items():
         crit_obj = rubric_criteria_by_key.get(k)
         rcs_id = f"rcs_{judge.id}_{project_id}_{k}"
@@ -1026,8 +1196,9 @@ def save_judge_evaluation(
             "raw_score": raw_score,
             "version": review.version,
             "status": review.status,
+            "rubric_id": rubric.id,
         },
-        account_id=actor.id,
+        account_id=actor.id if actor else None,
         commit=False,
     )
 
@@ -1040,28 +1211,32 @@ def save_judge_evaluation(
 
 
 def get_organizer_judging_progress(db: Session, event_id: str) -> dict[str, Any]:
-    """Compute organizer metrics: assignments, unstarted, draft, finalized, coverage gaps, and outstanding work."""
-    total_assignments = db.scalar(
-        select(func.count(JudgeAssignment.id)).where(JudgeAssignment.event_id == event_id)
-    ) or 0
-
-    finalized_count = db.scalar(
-        select(func.count(Review.judge_id)).where(
-            Review.event_id == event_id,
-            Review.status == "finalized",
+    """Compute organizer metrics strictly based on current assignments and their review states."""
+    # 1. Query all current assignments outer-joined to Review
+    stmt = (
+        select(
+            JudgeAssignment.id,
+            JudgeAssignment.judge_id,
+            JudgeAssignment.project_id,
+            Review.status.label("review_status"),
         )
-    ) or 0
-
-    draft_count = db.scalar(
-        select(func.count(Review.judge_id)).where(
-            Review.event_id == event_id,
-            Review.status == "draft",
+        .outerjoin(
+            Review,
+            and_(
+                Review.judge_id == JudgeAssignment.judge_id,
+                Review.project_id == JudgeAssignment.project_id,
+            ),
         )
-    ) or 0
+        .where(JudgeAssignment.event_id == event_id)
+    )
+    assignment_rows = db.execute(stmt).all()
 
-    unstarted_count = max(0, total_assignments - (finalized_count + draft_count))
+    total_assignments = len(assignment_rows)
+    finalized_count = sum(1 for r in assignment_rows if r.review_status == "finalized")
+    draft_count = sum(1 for r in assignment_rows if r.review_status == "draft")
+    unstarted_count = sum(1 for r in assignment_rows if r.review_status not in ("finalized", "draft"))
 
-    # Projects with review counts
+    # 2. Submitted projects progress
     projects = db.scalars(
         select(Project).where(Project.event_id == event_id, Project.status == "submitted")
     ).all()
@@ -1069,26 +1244,10 @@ def get_organizer_judging_progress(db: Session, event_id: str) -> dict[str, Any]
     project_progress = []
     projects_under_covered = []
     for p in projects:
-        p_assigned = db.scalar(
-            select(func.count(JudgeAssignment.id)).where(
-                JudgeAssignment.event_id == event_id,
-                JudgeAssignment.project_id == p.id,
-            )
-        ) or 0
-        p_finalized = db.scalar(
-            select(func.count(Review.judge_id)).where(
-                Review.event_id == event_id,
-                Review.project_id == p.id,
-                Review.status == "finalized",
-            )
-        ) or 0
-        p_draft = db.scalar(
-            select(func.count(Review.judge_id)).where(
-                Review.event_id == event_id,
-                Review.project_id == p.id,
-                Review.status == "draft",
-            )
-        ) or 0
+        p_rows = [r for r in assignment_rows if r.project_id == p.id]
+        p_assigned = len(p_rows)
+        p_finalized = sum(1 for r in p_rows if r.review_status == "finalized")
+        p_draft = sum(1 for r in p_rows if r.review_status == "draft")
 
         item = {
             "project_id": p.id,
@@ -1102,23 +1261,13 @@ def get_organizer_judging_progress(db: Session, event_id: str) -> dict[str, Any]
         if p_finalized < 2:  # Below baseline coverage threshold
             projects_under_covered.append(item)
 
-    # Judges with outstanding work
+    # 3. Judges with outstanding work
     judges = db.scalars(select(Judge).where(Judge.event_id == event_id)).all()
     judge_progress = []
     for j in judges:
-        j_assigned = db.scalar(
-            select(func.count(JudgeAssignment.id)).where(
-                JudgeAssignment.event_id == event_id,
-                JudgeAssignment.judge_id == j.id,
-            )
-        ) or 0
-        j_finalized = db.scalar(
-            select(func.count(Review.project_id)).where(
-                Review.event_id == event_id,
-                Review.judge_id == j.id,
-                Review.status == "finalized",
-            )
-        ) or 0
+        j_rows = [r for r in assignment_rows if r.judge_id == j.id]
+        j_assigned = len(j_rows)
+        j_finalized = sum(1 for r in j_rows if r.review_status == "finalized")
         if j_assigned > j_finalized:
             judge_progress.append({
                 "judge_id": j.id,
@@ -1129,14 +1278,20 @@ def get_organizer_judging_progress(db: Session, event_id: str) -> dict[str, Any]
                 "outstanding": j_assigned - j_finalized,
             })
 
+    # 4. Total historical reviews (including any whose assignments were removed)
+    total_historical_reviews = db.scalar(
+        select(func.count(Review.judge_id)).where(Review.event_id == event_id)
+    ) or 0
+    historical_unassigned_reviews = max(0, total_historical_reviews - (finalized_count + draft_count))
+
     return {
         "event_id": event_id,
-        "total_projects": len(projects),
-        "total_judges": len(judges),
         "total_assignments": total_assignments,
         "finalized_reviews": finalized_count,
         "draft_reviews": draft_count,
         "unstarted_assignments": unstarted_count,
+        "total_projects": len(projects),
+        "total_judges": len(judges),
         "projects_count": len(projects),
         "projects_under_covered": len(projects_under_covered),
         "under_covered_projects": projects_under_covered,
@@ -1144,6 +1299,8 @@ def get_organizer_judging_progress(db: Session, event_id: str) -> dict[str, Any]
         "judges_outstanding": judge_progress,
         "judges_with_outstanding_work": len(judge_progress),
         "project_progress": project_progress,
+        "total_historical_reviews": total_historical_reviews,
+        "historical_unassigned_reviews": historical_unassigned_reviews,
     }
 
 

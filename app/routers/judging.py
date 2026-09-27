@@ -195,12 +195,14 @@ async def judge_review_submit(
     content_type = request.headers.get("content-type", "").lower()
     is_json = "application/json" in content_type
 
+    form_rubric_id = None
     if is_json:
         payload = await request.json()
         action = str(payload.get("action", "finalize")).lower()
         comment = str(payload.get("comment", "")).strip()
         criteria_inputs = payload.get("criteria", {})
         expected_ver_raw = payload.get("expected_version") or payload.get("version")
+        form_rubric_id = payload.get("rubric_id")
     else:
         form = await request.form()
         csrf_token = form.get("csrf_token")
@@ -209,6 +211,7 @@ async def judge_review_submit(
         action = str(form.get("action", "finalize")).lower()
         comment = str(form.get("comment", "")).strip()
         expected_ver_raw = form.get("expected_version") or form.get("version")
+        form_rubric_id = form.get("rubric_id")
 
         # Collect criteria inputs prefixed with 'criterion_'
         criteria_inputs = {}
@@ -234,6 +237,7 @@ async def judge_review_submit(
             is_final=is_final,
             expected_version=expected_version,
             actor=account,
+            form_rubric_id=form_rubric_id,
         )
 
         if is_json:
@@ -256,7 +260,13 @@ async def judge_review_submit(
             return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(cce)})
         event = db.get(Event, event_id)
         project = db.get(Project, project_id)
-        rubric = get_active_rubric(db, event_id)
+        curr_review = db.scalars(
+            select(Review).where(Review.judge_id == judge.id, Review.project_id == project_id)
+        ).first()
+        if curr_review and curr_review.rubric_id:
+            rubric = db.get(Rubric, curr_review.rubric_id) or get_active_rubric(db, event_id)
+        else:
+            rubric = get_active_rubric(db, event_id)
         return templates.TemplateResponse(
             request=request,
             name="judge_review.html",
@@ -264,7 +274,7 @@ async def judge_review_submit(
                 "event": event,
                 "judge": judge,
                 "project": project,
-                "review": None,
+                "review": curr_review,
                 "rubric": rubric,
                 "existing_scores": criteria_inputs,
                 "error_msg": str(cce),
@@ -282,7 +292,13 @@ async def judge_review_submit(
             return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": str(ve)})
         event = db.get(Event, event_id)
         project = db.get(Project, project_id)
-        rubric = get_active_rubric(db, event_id)
+        curr_review = db.scalars(
+            select(Review).where(Review.judge_id == judge.id, Review.project_id == project_id)
+        ).first()
+        if curr_review and curr_review.rubric_id:
+            rubric = db.get(Rubric, curr_review.rubric_id) or get_active_rubric(db, event_id)
+        else:
+            rubric = get_active_rubric(db, event_id)
         return templates.TemplateResponse(
             request=request,
             name="judge_review.html",
@@ -290,7 +306,7 @@ async def judge_review_submit(
                 "event": event,
                 "judge": judge,
                 "project": project,
-                "review": None,
+                "review": curr_review,
                 "rubric": rubric,
                 "existing_scores": criteria_inputs,
                 "error_msg": str(ve),
@@ -564,6 +580,11 @@ def organizer_progress_view(
 ):
     """Retrieve event judging progress and coverage metrics."""
     require_organizer(db, event_id, account)
+    if account and get_account_judge_for_event(db, event_id, account.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Dual-role restriction: Organizers who are active judges in this event cannot view judging progress or aggregates.",
+        )
     progress_data = get_organizer_judging_progress(db, event_id=event_id)
     return JSONResponse(status_code=status.HTTP_200_OK, content=progress_data)
 

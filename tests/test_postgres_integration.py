@@ -1,14 +1,32 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from app.models import Event, Track, Team, Judge, Project, Review
+from app.models import (
+    Account,
+    Event,
+    EventAuditLog,
+    Judge,
+    JudgeAssignment,
+    Project,
+    Review,
+    ReviewCriterionScore,
+    Rubric,
+    Team,
+    Track,
+)
+from app.services import ConcurrencyConflictError, create_account, create_event, create_team
+from app.judging_services import (
+    assign_judge_to_project,
+    create_or_update_event_rubric,
+    save_judge_evaluation,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -407,4 +425,373 @@ def test_postgres_deadline_change_during_waiting_mutation(pg_engine):
         p_check = verify_session.get(Project, project_id)
         assert p_check.version == 1
         assert p_check.title == "Initial DL Project"
+
+
+def test_postgres_concurrent_review_creation_two_sessions(pg_engine):
+    """Real PostgreSQL test: Two concurrent sessions attempt first review creation for same (judge, project).
+    Exactly one must succeed, the other must receive ConcurrencyConflictError, and no partial criterion state exists.
+    """
+    import concurrent.futures
+    import threading
+    import uuid
+
+    uid = uuid.uuid4().hex[:8]
+    event_id = f"evt_rev_create_{uid}"
+
+    with Session(pg_engine) as setup_session:
+        org = create_account(setup_session, f"org_rev_cr_{uid}@example.com", "Password123!", "Org Cr")
+        event = create_event(
+            setup_session,
+            event_id=event_id,
+            name=f"Review Create {uid}",
+            submissions_close=datetime.now(timezone.utc) + timedelta(days=5),
+            creator_account_id=org.id,
+        )
+        track = Track(id=f"trk_cr_{uid}", event_id=event.id, name="Track Cr")
+        setup_session.add(track)
+        setup_session.flush()
+
+        crit = [{"key": "c1", "name": "Crit", "weight": 1.0, "min_score": 1.0, "max_score": 5.0}]
+        create_or_update_event_rubric(setup_session, event.id, "Rubric Cr", crit, org)
+
+        judge_acc = create_account(setup_session, f"j_cr_{uid}@example.com", "Password123!", "Judge Cr")
+        judge = Judge(
+            id=f"jdg_cr_{uid}",
+            event_id=event.id,
+            name="Judge Cr",
+            email=f"j_cr_{uid}@example.com",
+            account_id=judge_acc.id,
+            tracks=["*"],
+        )
+        setup_session.add(judge)
+        setup_session.flush()
+
+        team = create_team(setup_session, event.id, f"Team Cr {uid}", org)
+        proj = Project(
+            id=f"prj_cr_{uid}",
+            event_id=event.id,
+            team_id=team.id,
+            track_id=track.id,
+            title=f"Project Cr {uid}",
+            summary="Project summary",
+            repo_url="https://example.com/repo",
+            status="submitted",
+            submitted_at=datetime.now(timezone.utc),
+        )
+        setup_session.add(proj)
+        setup_session.flush()
+
+        assign_judge_to_project(setup_session, event.id, judge.id, proj.id, org)
+        setup_session.commit()
+
+        judge_id = judge.id
+        project_id = proj.id
+        judge_account_id = judge_acc.id
+
+    barrier = threading.Barrier(2)
+
+    def worker(worker_id: int):
+        with Session(pg_engine) as session:
+            j = session.get(Judge, judge_id)
+            act = session.get(Account, judge_account_id)
+            barrier.wait(timeout=5)
+            try:
+                r = save_judge_evaluation(
+                    db=session,
+                    event_id=event_id,
+                    judge=j,
+                    project_id=project_id,
+                    criteria_inputs={"c1": float(worker_id + 1)},
+                    comment=f"Worker {worker_id} review",
+                    is_final=False,
+                    expected_version=None,
+                    actor=act,
+                )
+                session.commit()
+                return ("SUCCESS", r.version, r.comment)
+            except ConcurrencyConflictError as cce:
+                session.rollback()
+                return ("CONFLICT", str(cce))
+            except Exception as exc:
+                session.rollback()
+                return ("ERROR", str(exc))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(worker, 1)
+        f2 = executor.submit(worker, 2)
+        res1 = f1.result(timeout=10)
+        res2 = f2.result(timeout=10)
+
+    results = [res1, res2]
+    statuses = [r[0] for r in results]
+    assert "SUCCESS" in statuses, f"Expected one worker to succeed, got: {results}"
+    assert "CONFLICT" in statuses, f"Expected one worker to get conflict, got: {results}"
+
+    with Session(pg_engine) as verify_session:
+        # Exactly one review exists in PostgreSQL
+        reviews = verify_session.scalars(
+            select(Review).where(Review.event_id == event_id, Review.judge_id == judge_id, Review.project_id == project_id)
+        ).all()
+        assert len(reviews) == 1
+        assert reviews[0].version == 1
+
+        # Criteria scores intact
+        scores = verify_session.scalars(
+            select(ReviewCriterionScore).where(
+                ReviewCriterionScore.judge_id == judge_id,
+                ReviewCriterionScore.project_id == project_id,
+            )
+        ).all()
+        assert len(scores) == 1
+
+        # Audit log has review_conflict entry
+        conflict_log = verify_session.scalars(
+            select(EventAuditLog).where(
+                EventAuditLog.event_id == event_id,
+                EventAuditLog.action == "review.conflict",
+            )
+        ).first()
+        assert conflict_log is not None
+
+
+def test_postgres_concurrent_review_edits_from_same_version(pg_engine):
+    """Real PostgreSQL test: Two sessions read review at version 1, and concurrently submit edits with expected_version=1.
+    Exactly one succeeds and advances to version 2; the other is rejected with ConcurrencyConflictError.
+    """
+    import concurrent.futures
+    import threading
+    import uuid
+
+    uid = uuid.uuid4().hex[:8]
+    event_id = f"evt_rev_edit_{uid}"
+
+    with Session(pg_engine) as setup_session:
+        org = create_account(setup_session, f"org_rev_ed_{uid}@example.com", "Password123!", "Org Ed")
+        event = create_event(
+            setup_session,
+            event_id=event_id,
+            name=f"Review Edit {uid}",
+            submissions_close=datetime.now(timezone.utc) + timedelta(days=5),
+            creator_account_id=org.id,
+        )
+        track = Track(id=f"trk_ed_{uid}", event_id=event.id, name="Track Ed")
+        setup_session.add(track)
+        setup_session.flush()
+
+        crit = [{"key": "c1", "name": "Crit", "weight": 1.0, "min_score": 1.0, "max_score": 5.0}]
+        create_or_update_event_rubric(setup_session, event.id, "Rubric Ed", crit, org)
+
+        judge_acc = create_account(setup_session, f"j_ed_{uid}@example.com", "Password123!", "Judge Ed")
+        judge = Judge(
+            id=f"jdg_ed_{uid}",
+            event_id=event.id,
+            name="Judge Ed",
+            email=f"j_ed_{uid}@example.com",
+            account_id=judge_acc.id,
+            tracks=["*"],
+        )
+        setup_session.add(judge)
+        setup_session.flush()
+
+        team = create_team(setup_session, event.id, f"Team Ed {uid}", org)
+        proj = Project(
+            id=f"prj_ed_{uid}",
+            event_id=event.id,
+            team_id=team.id,
+            track_id=track.id,
+            title=f"Project Ed {uid}",
+            summary="Project summary",
+            repo_url="https://example.com/repo",
+            status="submitted",
+            submitted_at=datetime.now(timezone.utc),
+        )
+        setup_session.add(proj)
+        setup_session.flush()
+
+        assign_judge_to_project(setup_session, event.id, judge.id, proj.id, org)
+
+        # Initial review at version 1
+        r_init = save_judge_evaluation(
+            db=setup_session,
+            event_id=event.id,
+            judge=judge,
+            project_id=proj.id,
+            criteria_inputs={"c1": 2.0},
+            comment="Initial v1",
+            is_final=False,
+            expected_version=None,
+            actor=judge_acc,
+        )
+        assert r_init.version == 1
+        setup_session.commit()
+
+        judge_id = judge.id
+        project_id = proj.id
+        judge_account_id = judge_acc.id
+
+    barrier = threading.Barrier(2)
+
+    def edit_worker(worker_id: int):
+        with Session(pg_engine) as session:
+            j = session.get(Judge, judge_id)
+            act = session.get(Account, judge_account_id)
+            barrier.wait(timeout=5)
+            try:
+                r = save_judge_evaluation(
+                    db=session,
+                    event_id=event_id,
+                    judge=j,
+                    project_id=project_id,
+                    criteria_inputs={"c1": 4.0},
+                    comment=f"Worker {worker_id} edit",
+                    is_final=False,
+                    expected_version=1,
+                    actor=act,
+                )
+                session.commit()
+                return ("SUCCESS", r.version, r.comment)
+            except ConcurrencyConflictError as cce:
+                session.rollback()
+                return ("CONFLICT", str(cce))
+            except Exception as exc:
+                session.rollback()
+                return ("ERROR", str(exc))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(edit_worker, 1)
+        f2 = executor.submit(edit_worker, 2)
+        res1 = f1.result(timeout=10)
+        res2 = f2.result(timeout=10)
+
+    results = [res1, res2]
+    statuses = [r[0] for r in results]
+    assert "SUCCESS" in statuses, f"Expected one edit to succeed: {results}"
+    assert "CONFLICT" in statuses, f"Expected one edit to conflict: {results}"
+
+    with Session(pg_engine) as verify_session:
+        r_final = verify_session.scalars(
+            select(Review).where(Review.judge_id == judge_id, Review.project_id == project_id)
+        ).first()
+        assert r_final.version == 2
+
+
+def test_postgres_review_session_loaded_before_commit(pg_engine):
+    """Real PostgreSQL test: Session B loads review into its session cache at version 1 before Session A commits version 2.
+    When Session B attempts edit with expected_version=1, row lock and fresh refresh reveals version 2, raising ConcurrencyConflictError.
+    """
+    import uuid
+
+    uid = uuid.uuid4().hex[:8]
+    event_id = f"evt_rev_cache_{uid}"
+
+    with Session(pg_engine) as setup_session:
+        org = create_account(setup_session, f"org_rev_ca_{uid}@example.com", "Password123!", "Org Ca")
+        event = create_event(
+            setup_session,
+            event_id=event_id,
+            name=f"Review Cache {uid}",
+            submissions_close=datetime.now(timezone.utc) + timedelta(days=5),
+            creator_account_id=org.id,
+        )
+        track = Track(id=f"trk_ca_{uid}", event_id=event.id, name="Track Ca")
+        setup_session.add(track)
+        setup_session.flush()
+
+        crit = [{"key": "c1", "name": "Crit", "weight": 1.0, "min_score": 1.0, "max_score": 5.0}]
+        create_or_update_event_rubric(setup_session, event.id, "Rubric Ca", crit, org)
+
+        judge_acc = create_account(setup_session, f"j_ca_{uid}@example.com", "Password123!", "Judge Ca")
+        judge = Judge(
+            id=f"jdg_ca_{uid}",
+            event_id=event.id,
+            name="Judge Ca",
+            email=f"j_ca_{uid}@example.com",
+            account_id=judge_acc.id,
+            tracks=["*"],
+        )
+        setup_session.add(judge)
+        setup_session.flush()
+
+        team = create_team(setup_session, event.id, f"Team Ca {uid}", org)
+        proj = Project(
+            id=f"prj_ca_{uid}",
+            event_id=event.id,
+            team_id=team.id,
+            track_id=track.id,
+            title=f"Project Ca {uid}",
+            summary="Project summary",
+            repo_url="https://example.com/repo",
+            status="submitted",
+            submitted_at=datetime.now(timezone.utc),
+        )
+        setup_session.add(proj)
+        setup_session.flush()
+
+        assign_judge_to_project(setup_session, event.id, judge.id, proj.id, org)
+
+        # Initial review at version 1
+        r_init = save_judge_evaluation(
+            db=setup_session,
+            event_id=event.id,
+            judge=judge,
+            project_id=proj.id,
+            criteria_inputs={"c1": 2.0},
+            comment="Initial v1",
+            is_final=False,
+            expected_version=None,
+            actor=judge_acc,
+        )
+        assert r_init.version == 1
+        setup_session.commit()
+
+        judge_id = judge.id
+        project_id = proj.id
+        judge_account_id = judge_acc.id
+
+    # Step 1: Session B loads the review into its identity map (at version 1)
+    session_b = Session(pg_engine)
+    r_in_b = session_b.scalars(
+        select(Review).where(Review.judge_id == judge_id, Review.project_id == project_id)
+    ).first()
+    assert r_in_b is not None
+    assert r_in_b.version == 1
+
+    # Step 2: Competing Session A updates review to version 2 and commits
+    with Session(pg_engine) as session_a:
+        j_a = session_a.get(Judge, judge_id)
+        act_a = session_a.get(Account, judge_account_id)
+        r_a = save_judge_evaluation(
+            db=session_a,
+            event_id=event_id,
+            judge=j_a,
+            project_id=project_id,
+            criteria_inputs={"c1": 4.0},
+            comment="Session A update to v2",
+            is_final=False,
+            expected_version=1,
+            actor=act_a,
+        )
+        assert r_a.version == 2
+        session_a.commit()
+
+    # Step 3: Session B attempts to save using expected_version=1
+    # Without populate_existing / refresh, session_b would see cached version 1.
+    # With row lock and refresh, session_b detects that database state is version 2 and raises ConcurrencyConflictError!
+    try:
+        j_b = session_b.get(Judge, judge_id)
+        act_b = session_b.get(Account, judge_account_id)
+        with pytest.raises(ConcurrencyConflictError, match="Conflict: Review has been modified"):
+            save_judge_evaluation(
+                db=session_b,
+                event_id=event_id,
+                judge=j_b,
+                project_id=project_id,
+                criteria_inputs={"c1": 5.0},
+                comment="Session B attempt with stale expectation",
+                is_final=False,
+                expected_version=1,
+                actor=act_b,
+            )
+    finally:
+        session_b.close()
 

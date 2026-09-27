@@ -587,7 +587,7 @@ def manage_event_view(
         .limit(20)
     ).all()
 
-    from .judging_services import get_active_rubric, get_organizer_judging_progress
+    from .judging_services import get_account_judge_for_event, get_active_rubric, get_organizer_judging_progress
     from .models import Judge, JudgeInvitation
 
     rubric = get_active_rubric(db, event_id)
@@ -595,7 +595,13 @@ def manage_event_view(
     invitations = db.scalars(
         select(JudgeInvitation).where(JudgeInvitation.event_id == event_id).order_by(JudgeInvitation.created_at.desc())
     ).all()
-    judging_progress = get_organizer_judging_progress(db, event_id)
+
+    # Dual-role restriction: If the organizer is an active judge in this event, do NOT expose judging progress
+    is_judge_in_event = bool(account and get_account_judge_for_event(db, event_id, account.id))
+    if is_judge_in_event:
+        judging_progress = None
+    else:
+        judging_progress = get_organizer_judging_progress(db, event_id)
 
     csrf_token = get_request_csrf_token(request)
     return templates.TemplateResponse(
@@ -610,6 +616,7 @@ def manage_event_view(
             "judges": judges,
             "invitations": invitations,
             "judging_progress": judging_progress,
+            "is_judge_in_event": is_judge_in_event,
             "audit_logs": audit_logs,
             "csrf_token": csrf_token,
             "current_account": account,

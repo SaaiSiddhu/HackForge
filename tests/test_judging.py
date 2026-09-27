@@ -42,6 +42,7 @@ from app.judging_services import (
     get_account_judge_for_event,
     get_active_rubric,
     get_invitation_by_token,
+    get_judge_assigned_projects,
 )
 
 
@@ -104,7 +105,7 @@ def make_judge(
     account_id: str = None,
     tracks: list = None,
 ) -> Judge:
-    track_list = tracks or []
+    track_list = tracks if tracks is not None else ["*"]
     j = Judge(
         id=judge_id,
         event_id=event_id,
@@ -116,7 +117,8 @@ def make_judge(
     db.add(j)
     db.flush()
     for tid in track_list:
-        db.add(JudgeTrackPermission(id=f"jt_{j.id}_{tid}", judge_id=j.id, track_id=tid))
+        if tid != "*":
+            db.add(JudgeTrackPermission(id=f"jt_{j.id}_{tid}", judge_id=j.id, track_id=tid))
     db.flush()
     return j
 
@@ -443,8 +445,8 @@ def test_batch_assignment_eligibility_conflicts_and_load_balance(judging_env):
         # Judge 2: AI only
         j2 = make_judge(db, "j2", event.id, "Judge 2", "j2@example.com", account_id=acc_j2.id, tracks=[t_ai.id])
 
-        # Judge 3: All tracks (no track permission records means untracked = all)
-        j3 = make_judge(db, "j3", event.id, "Judge 3", "j3@example.com", account_id=acc_j3.id, tracks=[])
+        # Judge 3: All tracks (explicit wildcard '*' means all tracks)
+        j3 = make_judge(db, "j3", event.id, "Judge 3", "j3@example.com", account_id=acc_j3.id, tracks=["*"])
 
         # Teams and Projects
         # Team Web A: Member is Judge 1 (conflict!)
@@ -771,3 +773,343 @@ def test_organizer_judging_progress_metrics(judging_env):
         assert "p2" in prog["under_covered_project_ids"]
         # j1 has unstarted work on p2, j2 has draft work on p1 -> both have outstanding work
         assert prog["judges_with_outstanding_work"] == 2
+
+
+# --- 8. Security & Integrity Regression Tests ---
+
+def test_judge_identity_no_automatic_email_claiming(judging_env):
+    """Email match alone must NOT confer judge identity or access."""
+    engine = judging_env["engine"]
+    client = judging_env["client"]
+    with Session(engine) as db:
+        org = create_account(db, "org_no_claim@example.com", "Password123!", "Org")
+        event = make_event(db, "evt_no_claim", "No Claim Event", org)
+        # Create unlinked fixture judge (imported without account_id)
+        j_fixture = make_judge(
+            db,
+            judge_id="jdg_fixture_unlinked",
+            event_id=event.id,
+            name="Fixture Judge",
+            email="fixture_judge@example.com",
+            account_id=None,
+        )
+        db.commit()
+
+        # Regular user registers with the EXACT same email address
+        new_user = create_account(db, "fixture_judge@example.com", "Password123!", "New User")
+        db.commit()
+
+        # 1. Direct service query MUST NOT find or claim judge identity
+        found_judge = get_account_judge_for_event(db, event.id, new_user.id)
+        assert found_judge is None, "Automatic email claiming must not assign judge identity"
+
+        # 2. Database judge record remains strictly untouched
+        refreshed_judge = db.get(Judge, "jdg_fixture_unlinked")
+        assert refreshed_judge.account_id is None, "Judge.account_id must remain None"
+
+        # 3. HTTP access to judge dashboard is denied
+        login_user(client, "fixture_judge@example.com", "Password123!")
+        resp = client.get(f"/events/{event.id}/judge", follow_redirects=False)
+        # Should redirect to login or manage with error, or return 403
+        assert resp.status_code in (302, 303, 403)
+        if resp.status_code in (302, 303):
+            assert "error" in resp.headers.get("location", "").lower() or "login" in resp.headers.get("location", "").lower()
+
+        # 4. Explicit invitation acceptance properly links the judge
+        inv, token = create_judge_invitation(db, event.id, "fixture_judge@example.com", ["*"], org)
+        accepted_judge = accept_judge_invitation(db, token, new_user)
+        assert accepted_judge.id == "jdg_fixture_unlinked"
+        assert accepted_judge.account_id == new_user.id
+
+        # 5. Now get_account_judge_for_event succeeds via explicit authorization
+        post_link_judge = get_account_judge_for_event(db, event.id, new_user.id)
+        assert post_link_judge is not None
+        assert post_link_judge.id == "jdg_fixture_unlinked"
+
+
+def test_judge_invitation_conflict_rejection(judging_env):
+    """Accepting an invitation must reject wrong recipient and reject judge already linked to another account."""
+    engine = judging_env["engine"]
+    with Session(engine) as db:
+        org = create_account(db, "org_inv_conf@example.com", "Password123!", "Org")
+        event = make_event(db, "evt_inv_conf", "Invite Conflict Event", org)
+        acc_a = create_account(db, "acc_a@example.com", "Password123!", "Judge A")
+        acc_b = create_account(db, "acc_b@example.com", "Password123!", "Judge B")
+        acc_shared = create_account(db, "shared@example.com", "Password123!", "Judge Shared")
+        # Judge already linked to acc_a, but has email shared@example.com
+        j = make_judge(db, "jdg_conf", event.id, "Judge Conf", "shared@example.com", account_id=acc_a.id)
+        inv, token = create_judge_invitation(db, event.id, "shared@example.com", ["*"], org)
+        db.commit()
+
+        # 1. Acc B (mismatched email) attempts to accept -> Rejected by email match
+        with pytest.raises(ValueError, match="This invitation was issued for"):
+            accept_judge_invitation(db, token, acc_b)
+
+        # 2. Acc Shared (matching email) attempts to accept, but judge is linked to Acc A -> Conflict rejection
+        with pytest.raises(ValueError, match="already linked to another account"):
+            accept_judge_invitation(db, token, acc_shared)
+
+        # 3. Acc A receives invitation for acc_a@example.com and accepts -> Success
+        inv_a, token_a = create_judge_invitation(db, event.id, "acc_a@example.com", ["*"], org)
+        acc_a_accepted = accept_judge_invitation(db, token_a, acc_a)
+        assert acc_a_accepted.account_id == acc_a.id
+
+
+def test_rubric_preservation_lifecycle_and_stale_form_rejection(judging_env):
+    """Reviews retain original bound rubric across edits; new reviews use active rubric; stale form rubric rejected."""
+    engine = judging_env["engine"]
+    with Session(engine) as db:
+        org = create_account(db, "org_rub_life@example.com", "Password123!", "Org")
+        event = make_event(db, "evt_rub_life", "Rubric Lifecycle Event", org)
+
+        # Initial Rubric V1
+        crit_v1 = [
+            {"key": "c1", "name": "Crit 1", "weight": 1.0, "min_score": 1.0, "max_score": 5.0},
+            {"key": "c2", "name": "Crit 2", "weight": 2.0, "min_score": 0.0, "max_score": 10.0},
+        ]
+        rubric_v1 = create_or_update_event_rubric(db, event.id, "Rubric V1", crit_v1, org)
+        assert rubric_v1.version == 1
+
+        track = Track(id="trk_rub_life", event_id=event.id, name="Lifecycle Track")
+        db.add(track)
+        db.flush()
+        judge_acc = create_account(db, "j_life@example.com", "Password123!", "Judge Life")
+        judge = make_judge(db, "jdg_life", event.id, "Judge Life", "j_life@example.com", account_id=judge_acc.id)
+        tm = create_team(db, event.id, "Team Life", org)
+        p1 = make_project(db, "p1_life", event.id, tm.id, track.id, "Project 1")
+        p2 = make_project(db, "p2_life", event.id, tm.id, track.id, "Project 2")
+        db.commit()
+
+        assign_judge_to_project(db, event.id, judge.id, p1.id, org)
+        assign_judge_to_project(db, event.id, judge.id, p2.id, org)
+
+        # 1. Judge submits review for P1 under Rubric V1
+        r1 = save_judge_evaluation(
+            db=db,
+            event_id=event.id,
+            judge=judge,
+            project_id=p1.id,
+            criteria_inputs={"c1": 4.0, "c2": 8.0},
+            comment="Initial review under V1",
+            is_final=True,
+            expected_version=None,
+            actor=judge_acc,
+            form_rubric_id=rubric_v1.id,
+        )
+        assert r1.rubric_id == rubric_v1.id
+        assert r1.version == 1
+
+        # 2. Organizer updates rubric -> Creates Rubric V2 (with different criteria keys and weights)
+        crit_v2 = [
+            {"key": "c1", "name": "Crit 1 New", "weight": 2.0, "min_score": 1.0, "max_score": 5.0},
+            {"key": "c3", "name": "Crit 3 New", "weight": 1.0, "min_score": 0.0, "max_score": 10.0},
+        ]
+        rubric_v2 = create_or_update_event_rubric(db, event.id, "Rubric V2", crit_v2, org)
+        assert rubric_v2.version == 2
+        assert rubric_v2.id != rubric_v1.id
+
+        # 3. Judge edits review for P1:
+        # P1 must continue using Rubric V1 criteria (c1, c2), NOT V2 (c1, c3)!
+        # Submitting with form_rubric_id=rubric_v2.id must be rejected
+        with pytest.raises(ValueError, match="Rubric conflict"):
+            save_judge_evaluation(
+                db=db,
+                event_id=event.id,
+                judge=judge,
+                project_id=p1.id,
+                criteria_inputs={"c1": 5.0, "c2": 9.0},
+                comment="Edited with wrong rubric id",
+                is_final=True,
+                expected_version=1,
+                actor=judge_acc,
+                form_rubric_id=rubric_v2.id,
+            )
+
+        # Correct edit using bound Rubric V1 succeeds
+        r1_edited = save_judge_evaluation(
+            db=db,
+            event_id=event.id,
+            judge=judge,
+            project_id=p1.id,
+            criteria_inputs={"c1": 5.0, "c2": 9.0},
+            comment="Edited review under bound V1",
+            is_final=True,
+            expected_version=1,
+            actor=judge_acc,
+            form_rubric_id=rubric_v1.id,
+        )
+        assert r1_edited.rubric_id == rubric_v1.id
+        assert r1_edited.version == 2
+
+        # 4. New review for P2:
+        # Must use active Rubric V2! Submitting with stale V1 form_rubric_id is rejected
+        with pytest.raises(ValueError, match="Rubric conflict"):
+            save_judge_evaluation(
+                db=db,
+                event_id=event.id,
+                judge=judge,
+                project_id=p2.id,
+                criteria_inputs={"c1": 4.0, "c3": 6.0},
+                comment="New review with stale rubric id",
+                is_final=True,
+                expected_version=None,
+                actor=judge_acc,
+                form_rubric_id=rubric_v1.id,
+            )
+
+        # New review with Rubric V2 succeeds
+        r2 = save_judge_evaluation(
+            db=db,
+            event_id=event.id,
+            judge=judge,
+            project_id=p2.id,
+            criteria_inputs={"c1": 4.0, "c3": 6.0},
+            comment="New review under active V2",
+            is_final=True,
+            expected_version=None,
+            actor=judge_acc,
+            form_rubric_id=rubric_v2.id,
+        )
+        assert r2.rubric_id == rubric_v2.id
+        assert r2.version == 1
+
+
+def test_judge_track_permission_revocation_and_empty_list_policy(judging_env):
+    """Judge track permissions strictly enforce access; empty list means NO tracks permitted."""
+    engine = judging_env["engine"]
+    with Session(engine) as db:
+        org = create_account(db, "org_trk_rev@example.com", "Password123!", "Org")
+        event = make_event(db, "evt_trk_rev", "Track Revoke Event", org)
+        crit = [{"key": "c1", "name": "Crit", "weight": 1.0, "min_score": 1.0, "max_score": 5.0}]
+        create_or_update_event_rubric(db, event.id, "Rubric", crit, org)
+
+        t1 = Track(id="trk_1", event_id=event.id, name="Track 1")
+        t2 = Track(id="trk_2", event_id=event.id, name="Track 2")
+        db.add_all([t1, t2])
+        db.flush()
+
+        judge_acc = create_account(db, "j_trk@example.com", "Password123!", "Judge Track")
+        judge = make_judge(db, "jdg_trk", event.id, "Judge Trk", "j_trk@example.com", account_id=judge_acc.id, tracks=[t1.id])
+        tm = create_team(db, event.id, "Team Trk", org)
+        p1 = make_project(db, "p_trk_1", event.id, tm.id, t1.id, "Project Track 1")
+        db.commit()
+
+        assign_judge_to_project(db, event.id, judge.id, p1.id, org)
+
+        # Initial state: Judge is permitted for Track 1
+        assigned = get_judge_assigned_projects(db, event.id, judge)
+        assert len(assigned) == 1
+        assert assigned[0]["project_id"] == p1.id
+
+        # 1. Update judge tracks to empty list [] -> Means NO tracks permitted!
+        judge.tracks = []
+        db.commit()
+
+        # Dashboard filtering: Judge cannot see project anymore
+        assigned_after = get_judge_assigned_projects(db, event.id, judge)
+        assert len(assigned_after) == 0
+
+        # Evaluation attempt: Must be rejected with track permission error
+        with pytest.raises(PermissionError, match="track permissions"):
+            save_judge_evaluation(
+                db=db,
+                event_id=event.id,
+                judge=judge,
+                project_id=p1.id,
+                criteria_inputs={"c1": 5.0},
+                comment="Should fail",
+                is_final=False,
+                expected_version=None,
+                actor=judge_acc,
+            )
+
+        # 2. Update judge tracks to ["*"] -> Means ALL tracks permitted
+        judge.tracks = ["*"]
+        db.commit()
+        assigned_wildcard = get_judge_assigned_projects(db, event.id, judge)
+        assert len(assigned_wildcard) == 1
+
+
+def test_removed_assignment_progress_metrics_isolation(judging_env):
+    """Historical reviews from removed assignments must NOT reduce unstarted assignments count."""
+    engine = judging_env["engine"]
+    with Session(engine) as db:
+        org = create_account(db, "org_rem_asgn@example.com", "Password123!", "Org")
+        event = make_event(db, "evt_rem_asgn", "Removed Asgn Event", org)
+        crit = [{"key": "c1", "name": "Crit", "weight": 1.0, "min_score": 1.0, "max_score": 5.0}]
+        create_or_update_event_rubric(db, event.id, "Rubric", crit, org)
+
+        track = Track(id="trk_rem", event_id=event.id, name="Rem Track")
+        db.add(track)
+        db.flush()
+
+        j1 = make_judge(db, "j1_rem", event.id, "J1", "j1_rem@example.com")
+        j2 = make_judge(db, "j2_rem", event.id, "J2", "j2_rem@example.com")
+        tm = create_team(db, event.id, "Tm Rem", org)
+        p1 = make_project(db, "p1_rem", event.id, tm.id, track.id, "P1")
+        p2 = make_project(db, "p2_rem", event.id, tm.id, track.id, "P2")
+        db.commit()
+
+        # Step 1: Assign J1 to P1 and finalize review
+        asgn1 = assign_judge_to_project(db, event.id, j1.id, p1.id, org)
+        save_judge_evaluation(db, event.id, j1, p1.id, {"c1": 5.0}, "Finalized review", True, None, org)
+
+        # Step 2: Remove assignment for (J1, P1) - simulate unassignment
+        db.delete(asgn1)
+        db.commit()
+
+        # Step 3: Assign J2 to P2 (no review created yet -> unstarted)
+        assign_judge_to_project(db, event.id, j2.id, p2.id, org)
+
+        # Calculate progress metrics
+        prog = get_organizer_judging_progress(db, event.id)
+        # There is exactly 1 current assignment (J2 -> P2)
+        assert prog["total_assignments"] == 1
+        assert prog["finalized_reviews"] == 0, "No current assignments have finalized review"
+        assert prog["draft_reviews"] == 0
+        assert prog["unstarted_assignments"] == 1, "The 1 current assignment is unstarted"
+        # Historical metrics preserve knowledge of the removed review
+        assert prog["total_historical_reviews"] == 1
+        assert prog["historical_unassigned_reviews"] == 1
+
+
+def test_dual_role_organizer_judge_access_restrictions(judging_env):
+    """Dual-role organizer/judges must NOT access judging aggregates or progress."""
+    engine = judging_env["engine"]
+    client = judging_env["client"]
+    with Session(engine) as db:
+        # Create user who is both organizer and judge
+        user = create_account(db, "dual_role@example.com", "Password123!", "Dual User")
+        event = make_event(db, "evt_dual", "Dual Role Event", user)
+        crit = [{"key": "c1", "name": "Crit", "weight": 1.0, "min_score": 1.0, "max_score": 5.0}]
+        create_or_update_event_rubric(db, event.id, "Rubric", crit, user)
+
+        track = Track(id="trk_dual", event_id=event.id, name="Dual Track")
+        db.add(track)
+        db.flush()
+
+        # Register user as a judge in this event
+        judge = make_judge(db, "jdg_dual", event.id, "Dual Judge", "dual_role@example.com", account_id=user.id)
+        tm = create_team(db, event.id, "Tm Dual", user)
+        proj = make_project(db, "prj_dual", event.id, tm.id, track.id, "Dual Proj")
+        db.commit()
+
+        # Log in as dual-role user
+        login_user(client, "dual_role@example.com", "Password123!")
+
+        # 1. API endpoint /events/{event_id}/manage/progress MUST return 403 Forbidden
+        progress_resp = client.get(f"/events/{event.id}/manage/progress")
+        assert progress_resp.status_code == 403
+        assert "Dual-role restriction" in progress_resp.text
+
+        # 2. Management page renders with judging progress hidden and dual-role warning present
+        manage_resp = client.get(f"/events/{event.id}/manage")
+        assert manage_resp.status_code == 200
+        assert "Dual-Role Notice" in manage_resp.text
+        # Ensure raw total assignments stat card is NOT rendered
+        assert "Total Assignments" not in manage_resp.text
+
+        # 3. Judge dashboard access is preserved for their own evaluations
+        judge_resp = client.get(f"/events/{event.id}/judge")
+        assert judge_resp.status_code == 200
+        assert "Assigned Projects" in judge_resp.text

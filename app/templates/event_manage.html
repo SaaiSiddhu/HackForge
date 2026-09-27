@@ -221,6 +221,10 @@
         </div>
       </div>
       <p class="hint" style="margin: 0;">Judges with outstanding reviews: <strong>{{ judging_progress.judges_with_outstanding_work }}</strong></p>
+    {% elif is_judge_in_event %}
+      <div class="alert alert-warning" style="margin: 0; padding: 12px; background: #fffbeb; border: 1px solid #fef3c7; border-radius: 6px; color: #92400e; font-size: 13px;">
+        <strong>Dual-Role Notice:</strong> You are registered as an active judge for this event. Live judging progress and aggregates are hidden to prevent scoring bias.
+      </div>
     {% else %}
       <p style="color: var(--text-muted); font-size: 14px;">Judging progress data not available.</p>
     {% endif %}

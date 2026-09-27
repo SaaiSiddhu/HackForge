@@ -49,6 +49,7 @@
   <form method="POST" action="/events/{{ event.id }}/judge/projects/{{ project.id }}/review">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="expected_version" value="{{ review.version if review else 0 }}">
+    <input type="hidden" name="rubric_id" value="{{ rubric.id }}">
 
     <h2 style="font-size: 18px; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
       Rubric Criteria (Weighted Normalized Scale)
