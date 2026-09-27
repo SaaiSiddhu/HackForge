@@ -49,17 +49,25 @@ from .models import (
 from .services import (
     ConcurrencyConflictError,
     accept_team_invitation,
+    add_event_prize,
     authenticate_account,
     create_account,
     create_event,
+    create_event_question,
+    create_event_track,
     create_team,
     create_team_invitation,
+    delete_event_prize,
+    delete_event_question,
+    delete_event_track,
     ensure_utc,
     get_account_team_for_event,
     revoke_team_invitation,
     save_project_draft_or_submission,
     update_event,
+    update_project_thumbnail,
     validate_and_save_image,
+    validate_and_save_image_with_path,
 )
 
 # Configure logging
@@ -123,9 +131,10 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             },
             status_code=exc.status_code,
         )
+    msg = exc.detail if isinstance(exc.detail, str) else "An error occurred"
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": exc.detail if isinstance(exc.detail, str) else "An error occurred"},
+        content={"error": msg, "detail": msg},
     )
 
 
@@ -569,6 +578,17 @@ def manage_event_view(
         raise HTTPException(status_code=404, detail="Event not found")
 
     tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+    for t in tracks:
+        t.project_count = db.scalar(
+            select(func.count(Project.id)).where(Project.track_id == t.id)
+        ) or 0
+
+    questions = db.scalars(
+        select(EventQuestion)
+        .where(EventQuestion.event_id == event_id)
+        .order_by(EventQuestion.order_idx.asc())
+    ).all()
+
     audit_logs = db.scalars(
         select(EventAuditLog)
         .where(EventAuditLog.event_id == event_id)
@@ -583,6 +603,8 @@ def manage_event_view(
         context={
             "event": event,
             "tracks": tracks,
+            "questions": questions,
+            "prizes": event.prizes or [],
             "audit_logs": audit_logs,
             "csrf_token": csrf_token,
             "current_account": account,
@@ -599,16 +621,32 @@ def manage_event_post(
     min_team_size: Annotated[int, Form()] = 1,
     max_team_size: Annotated[int, Form()] = 5,
     submissions_close: Annotated[str, Form()] = "",
+    registration_open: Annotated[str, Form()] = "",
+    registration_close: Annotated[str, Form()] = "",
+    submissions_open: Annotated[str, Form()] = "",
     csrf_token: Annotated[str, Form()] = "",
     db: Session = Depends(get_db),
     account: Account = Depends(require_event_organizer),
 ):
     validate_csrf(request, csrf_token_form=csrf_token)
+
+    def parse_dt(s: str) -> Optional[datetime]:
+        s = s.strip()
+        if not s:
+            return None
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
     try:
-        close_dt = datetime.fromisoformat(submissions_close.replace("Z", "+00:00"))
-        if close_dt.tzinfo is None:
-            close_dt = close_dt.replace(tzinfo=timezone.utc)
-        close_dt = close_dt.astimezone(timezone.utc)
+        close_dt = parse_dt(submissions_close)
+        if not close_dt:
+            raise ValueError("Submissions close date is required.")
+
+        reg_open_dt = parse_dt(registration_open)
+        reg_close_dt = parse_dt(registration_close)
+        sub_open_dt = parse_dt(submissions_open)
 
         update_event(
             db,
@@ -617,6 +655,9 @@ def manage_event_post(
             description=description,
             min_team_size=min_team_size,
             max_team_size=max_team_size,
+            registration_open=reg_open_dt,
+            registration_close=reg_close_dt,
+            submissions_open=sub_open_dt,
             submissions_close=close_dt,
             actor_account_id=account.id,
         )
@@ -627,6 +668,15 @@ def manage_event_post(
     except Exception as exc:
         event = db.get(Event, event_id)
         tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+        for t in tracks:
+            t.project_count = db.scalar(
+                select(func.count(Project.id)).where(Project.track_id == t.id)
+            ) or 0
+        questions = db.scalars(
+            select(EventQuestion)
+            .where(EventQuestion.event_id == event_id)
+            .order_by(EventQuestion.order_idx.asc())
+        ).all()
         audit_logs = db.scalars(
             select(EventAuditLog)
             .where(EventAuditLog.event_id == event_id)
@@ -639,6 +689,312 @@ def manage_event_post(
             context={
                 "event": event,
                 "tracks": tracks,
+                "questions": questions,
+                "prizes": event.prizes or [],
+                "audit_logs": audit_logs,
+                "error_msg": str(exc),
+                "csrf_token": get_request_csrf_token(request),
+                "current_account": account,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+# --- Organizer Tracks, Prizes & Questions Routes ---
+
+
+@app.post("/events/{event_id}/tracks", summary="Organizer add track")
+async def event_add_track(
+    event_id: str,
+    request: Request,
+    csrf_token: Annotated[Optional[str], Form()] = None,
+    name: Annotated[Optional[str], Form()] = None,
+    db: Session = Depends(get_db),
+    account: Account = Depends(require_event_organizer),
+):
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        payload = await request.json()
+        validate_csrf(request, csrf_token_form=payload.get("csrf_token"))
+        track_name = payload.get("name", "")
+    else:
+        validate_csrf(request, csrf_token_form=csrf_token)
+        track_name = name or ""
+
+    try:
+        track = create_event_track(db, event_id=event_id, name=track_name, actor_account_id=account.id)
+        if "application/json" in content_type:
+            return JSONResponse(status_code=status.HTTP_201_CREATED, content={"id": track.id, "name": track.name})
+        return RedirectResponse(url=f"/events/{event_id}/manage", status_code=status.HTTP_302_FOUND)
+    except ValueError as exc:
+        if "application/json" in content_type:
+            raise HTTPException(status_code=400, detail=str(exc))
+        event = db.get(Event, event_id)
+        tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+        questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
+        audit_logs = db.scalars(select(EventAuditLog).where(EventAuditLog.event_id == event_id).order_by(EventAuditLog.created_at.desc()).limit(20)).all()
+        return templates.TemplateResponse(
+            request=request,
+            name="event_manage.html",
+            context={
+                "event": event,
+                "tracks": tracks,
+                "questions": questions,
+                "prizes": event.prizes or [],
+                "audit_logs": audit_logs,
+                "error_msg": str(exc),
+                "csrf_token": get_request_csrf_token(request),
+                "current_account": account,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+@app.post("/events/{event_id}/tracks/{track_id}/delete", summary="Organizer delete track")
+async def event_delete_track(
+    event_id: str,
+    track_id: str,
+    request: Request,
+    csrf_token: Annotated[Optional[str], Form()] = None,
+    db: Session = Depends(get_db),
+    account: Account = Depends(require_event_organizer),
+):
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        payload = await request.json()
+        validate_csrf(request, csrf_token_form=payload.get("csrf_token"))
+    else:
+        validate_csrf(request, csrf_token_form=csrf_token)
+
+    try:
+        delete_event_track(db, event_id=event_id, track_id=track_id, actor_account_id=account.id)
+        if "application/json" in content_type:
+            return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ok"})
+        return RedirectResponse(url=f"/events/{event_id}/manage", status_code=status.HTTP_302_FOUND)
+    except ValueError as exc:
+        if "application/json" in content_type:
+            raise HTTPException(status_code=400, detail=str(exc))
+        event = db.get(Event, event_id)
+        tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+        for t in tracks:
+            t.project_count = db.scalar(select(func.count(Project.id)).where(Project.track_id == t.id)) or 0
+        questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
+        audit_logs = db.scalars(select(EventAuditLog).where(EventAuditLog.event_id == event_id).order_by(EventAuditLog.created_at.desc()).limit(20)).all()
+        return templates.TemplateResponse(
+            request=request,
+            name="event_manage.html",
+            context={
+                "event": event,
+                "tracks": tracks,
+                "questions": questions,
+                "prizes": event.prizes or [],
+                "audit_logs": audit_logs,
+                "error_msg": str(exc),
+                "csrf_token": get_request_csrf_token(request),
+                "current_account": account,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+@app.post("/events/{event_id}/prizes", summary="Organizer add prize")
+async def event_add_prize(
+    event_id: str,
+    request: Request,
+    csrf_token: Annotated[Optional[str], Form()] = None,
+    title: Annotated[Optional[str], Form()] = None,
+    description: Annotated[str, Form()] = "",
+    amount: Annotated[str, Form()] = "",
+    db: Session = Depends(get_db),
+    account: Account = Depends(require_event_organizer),
+):
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        payload = await request.json()
+        validate_csrf(request, csrf_token_form=payload.get("csrf_token"))
+        p_title = payload.get("title", "")
+        p_desc = payload.get("description", "")
+        p_amount = payload.get("amount", "")
+    else:
+        validate_csrf(request, csrf_token_form=csrf_token)
+        p_title = title or ""
+        p_desc = description
+        p_amount = amount
+
+    try:
+        prizes = add_event_prize(db, event_id=event_id, title=p_title, description=p_desc, amount=p_amount, actor_account_id=account.id)
+        if "application/json" in content_type:
+            return JSONResponse(status_code=status.HTTP_201_CREATED, content={"prizes": prizes})
+        return RedirectResponse(url=f"/events/{event_id}/manage", status_code=status.HTTP_302_FOUND)
+    except ValueError as exc:
+        if "application/json" in content_type:
+            raise HTTPException(status_code=400, detail=str(exc))
+        event = db.get(Event, event_id)
+        tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+        questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
+        audit_logs = db.scalars(select(EventAuditLog).where(EventAuditLog.event_id == event_id).order_by(EventAuditLog.created_at.desc()).limit(20)).all()
+        return templates.TemplateResponse(
+            request=request,
+            name="event_manage.html",
+            context={
+                "event": event,
+                "tracks": tracks,
+                "questions": questions,
+                "prizes": event.prizes or [],
+                "audit_logs": audit_logs,
+                "error_msg": str(exc),
+                "csrf_token": get_request_csrf_token(request),
+                "current_account": account,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+@app.post("/events/{event_id}/prizes/{prize_id_or_idx}/delete", summary="Organizer delete prize")
+async def event_delete_prize(
+    event_id: str,
+    prize_id_or_idx: str,
+    request: Request,
+    csrf_token: Annotated[Optional[str], Form()] = None,
+    db: Session = Depends(get_db),
+    account: Account = Depends(require_event_organizer),
+):
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        payload = await request.json()
+        validate_csrf(request, csrf_token_form=payload.get("csrf_token"))
+    else:
+        validate_csrf(request, csrf_token_form=csrf_token)
+
+    try:
+        prizes = delete_event_prize(db, event_id=event_id, prize_id_or_idx=prize_id_or_idx, actor_account_id=account.id)
+        if "application/json" in content_type:
+            return JSONResponse(status_code=status.HTTP_200_OK, content={"prizes": prizes})
+        return RedirectResponse(url=f"/events/{event_id}/manage", status_code=status.HTTP_302_FOUND)
+    except ValueError as exc:
+        if "application/json" in content_type:
+            raise HTTPException(status_code=400, detail=str(exc))
+        event = db.get(Event, event_id)
+        tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+        questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
+        audit_logs = db.scalars(select(EventAuditLog).where(EventAuditLog.event_id == event_id).order_by(EventAuditLog.created_at.desc()).limit(20)).all()
+        return templates.TemplateResponse(
+            request=request,
+            name="event_manage.html",
+            context={
+                "event": event,
+                "tracks": tracks,
+                "questions": questions,
+                "prizes": event.prizes or [],
+                "audit_logs": audit_logs,
+                "error_msg": str(exc),
+                "csrf_token": get_request_csrf_token(request),
+                "current_account": account,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+@app.post("/events/{event_id}/questions", summary="Organizer add custom question")
+async def event_add_question(
+    event_id: str,
+    request: Request,
+    csrf_token: Annotated[Optional[str], Form()] = None,
+    label: Annotated[Optional[str], Form()] = None,
+    question_type: Annotated[str, Form()] = "text",
+    required: Annotated[Optional[str], Form()] = None,
+    options: Annotated[Optional[str], Form()] = None,
+    db: Session = Depends(get_db),
+    account: Account = Depends(require_event_organizer),
+):
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        payload = await request.json()
+        validate_csrf(request, csrf_token_form=payload.get("csrf_token"))
+        q_label = payload.get("label", "")
+        q_type = payload.get("question_type", "text")
+        q_req = bool(payload.get("required", False))
+        q_options = payload.get("options", [])
+    else:
+        validate_csrf(request, csrf_token_form=csrf_token)
+        q_label = label or ""
+        q_type = question_type
+        q_req = required in ("true", "1", "on", "yes", True)
+        q_options = [opt.strip() for opt in (options or "").split("\n") if opt.strip()]
+
+    try:
+        question = create_event_question(
+            db,
+            event_id=event_id,
+            label=q_label,
+            question_type=q_type,
+            required=q_req,
+            options=q_options,
+            actor_account_id=account.id,
+        )
+        if "application/json" in content_type:
+            return JSONResponse(status_code=status.HTTP_201_CREATED, content={"id": question.id, "label": question.label, "required": question.required})
+        return RedirectResponse(url=f"/events/{event_id}/manage", status_code=status.HTTP_302_FOUND)
+    except ValueError as exc:
+        if "application/json" in content_type:
+            raise HTTPException(status_code=400, detail=str(exc))
+        event = db.get(Event, event_id)
+        tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+        questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
+        audit_logs = db.scalars(select(EventAuditLog).where(EventAuditLog.event_id == event_id).order_by(EventAuditLog.created_at.desc()).limit(20)).all()
+        return templates.TemplateResponse(
+            request=request,
+            name="event_manage.html",
+            context={
+                "event": event,
+                "tracks": tracks,
+                "questions": questions,
+                "prizes": event.prizes or [],
+                "audit_logs": audit_logs,
+                "error_msg": str(exc),
+                "csrf_token": get_request_csrf_token(request),
+                "current_account": account,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+@app.post("/events/{event_id}/questions/{question_id}/delete", summary="Organizer delete custom question")
+async def event_delete_question(
+    event_id: str,
+    question_id: str,
+    request: Request,
+    csrf_token: Annotated[Optional[str], Form()] = None,
+    db: Session = Depends(get_db),
+    account: Account = Depends(require_event_organizer),
+):
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        payload = await request.json()
+        validate_csrf(request, csrf_token_form=payload.get("csrf_token"))
+    else:
+        validate_csrf(request, csrf_token_form=csrf_token)
+
+    try:
+        delete_event_question(db, event_id=event_id, question_id=question_id, actor_account_id=account.id)
+        if "application/json" in content_type:
+            return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ok"})
+        return RedirectResponse(url=f"/events/{event_id}/manage", status_code=status.HTTP_302_FOUND)
+    except ValueError as exc:
+        if "application/json" in content_type:
+            raise HTTPException(status_code=400, detail=str(exc))
+        event = db.get(Event, event_id)
+        tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+        questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
+        audit_logs = db.scalars(select(EventAuditLog).where(EventAuditLog.event_id == event_id).order_by(EventAuditLog.created_at.desc()).limit(20)).all()
+        return templates.TemplateResponse(
+            request=request,
+            name="event_manage.html",
+            context={
+                "event": event,
+                "tracks": tracks,
+                "questions": questions,
+                "prizes": event.prizes or [],
                 "audit_logs": audit_logs,
                 "error_msg": str(exc),
                 "csrf_token": get_request_csrf_token(request),
@@ -976,6 +1332,7 @@ async def submit_post(
 
     # Handle image upload if present with bounded reading
     thumbnail_url = None
+    target_disk_path = None
     new_project_id = None
     upload_file = form.get("image")
     if upload_file and hasattr(upload_file, "read"):
@@ -988,6 +1345,7 @@ async def submit_post(
             tot += len(chunk)
             if tot > 5 * 1024 * 1024:
                 tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+                questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
                 project = db.scalars(select(Project).where(Project.event_id == event_id, Project.team_id == team.id)).first()
                 return templates.TemplateResponse(
                     request=request,
@@ -996,6 +1354,7 @@ async def submit_post(
                         "event": event,
                         "team": team,
                         "tracks": tracks,
+                        "questions": questions,
                         "project": project,
                         "event_is_open": True,
                         "error_msg": "Image upload error: File size exceeds maximum allowed size of 5 MB.",
@@ -1017,9 +1376,10 @@ async def submit_post(
                 else:
                     new_project_id = f"prj_{uuid.uuid4().hex[:10]}"
                     pid_for_media = new_project_id
-                thumbnail_url = validate_and_save_image(file_bytes, getattr(upload_file, "filename", ""), project_id=pid_for_media)
+                thumbnail_url, target_disk_path = validate_and_save_image_with_path(file_bytes, getattr(upload_file, "filename", ""), project_id=pid_for_media)
             except ValueError as exc:
                 tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+                questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
                 project = db.scalars(select(Project).where(Project.event_id == event_id, Project.team_id == team.id)).first()
                 return templates.TemplateResponse(
                     request=request,
@@ -1028,6 +1388,7 @@ async def submit_post(
                         "event": event,
                         "team": team,
                         "tracks": tracks,
+                        "questions": questions,
                         "project": project,
                         "event_is_open": True,
                         "error_msg": f"Image upload error: {exc}",
@@ -1062,7 +1423,10 @@ async def submit_post(
         else:
             return RedirectResponse(url=f"/events/{event_id}/submit", status_code=status.HTTP_302_FOUND)
     except ConcurrencyConflictError as cce:
+        if target_disk_path and target_disk_path.exists():
+            target_disk_path.unlink(missing_ok=True)
         tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+        questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
         project = db.scalars(select(Project).where(Project.event_id == event_id, Project.team_id == team.id)).first()
         return templates.TemplateResponse(
             request=request,
@@ -1071,6 +1435,7 @@ async def submit_post(
                 "event": event,
                 "team": team,
                 "tracks": tracks,
+                "questions": questions,
                 "project": project,
                 "event_is_open": True,
                 "error_msg": str(cce),
@@ -1080,7 +1445,10 @@ async def submit_post(
             status_code=status.HTTP_409_CONFLICT,
         )
     except ValueError as exc:
+        if target_disk_path and target_disk_path.exists():
+            target_disk_path.unlink(missing_ok=True)
         tracks = db.scalars(select(Track).where(Track.event_id == event_id)).all()
+        questions = db.scalars(select(EventQuestion).where(EventQuestion.event_id == event_id).order_by(EventQuestion.order_idx.asc())).all()
         project = db.scalars(select(Project).where(Project.event_id == event_id, Project.team_id == team.id)).first()
         return templates.TemplateResponse(
             request=request,
@@ -1089,6 +1457,7 @@ async def submit_post(
                 "event": event,
                 "team": team,
                 "tracks": tracks,
+                "questions": questions,
                 "project": project,
                 "event_is_open": True,
                 "error_msg": str(exc),
@@ -1165,34 +1534,38 @@ async def project_upload_image(
     project_id: str,
     request: Request,
     file: UploadFile = File(...),
-    csrf_token: Annotated[str, Form()] = "",
+    csrf_token: Annotated[Optional[str], Form()] = None,
+    expected_version: Annotated[Optional[str], Form()] = None,
     db: Session = Depends(get_db),
-    account: Account = Depends(require_authenticated_account),
+    account: Optional[Account] = Depends(get_current_account),
 ):
-    """Validate image with CSRF, deadline check, team authorization, bounded read, and Pillow validation."""
-    validate_csrf(request, csrf_token_form=csrf_token)
+    """Validate image with CSRF, deadline check, team authorization, bounded read, Pillow validation, and atomic OCC."""
+    if not account:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
 
-    project = db.get(Project, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    header_csrf = request.headers.get("x-csrf-token")
+    validate_csrf(request, csrf_token_form=csrf_token or header_csrf)
 
-    # Verify membership or admin
-    is_member = db.scalars(
-        select(TeamMembership).where(
-            TeamMembership.team_id == project.team_id,
-            TeamMembership.account_id == account.id,
+    # Read expected_version from form, header, or query
+    exp_ver_val = (
+        expected_version
+        or request.headers.get("x-expected-version")
+        or request.query_params.get("expected_version")
+    )
+    parsed_expected_ver = None
+    if exp_ver_val is not None and str(exp_ver_val).strip():
+        try:
+            parsed_expected_ver = int(str(exp_ver_val).strip())
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Invalid expected_version; must be an integer.",
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conflict: 'expected_version' is required for project thumbnail updates.",
         )
-    ).first() is not None
-    if not is_member and not account.is_platform_admin:
-        raise HTTPException(status_code=403, detail="Forbidden: You must be a member of this team to upload media")
-
-    # Verify submissions deadline
-    event = db.get(Event, project.event_id)
-    if event:
-        now = datetime.now(timezone.utc)
-        s_close = ensure_utc(event.submissions_close)
-        if s_close and now >= s_close:
-            raise HTTPException(status_code=400, detail=f"Submissions for {event.name} closed on {s_close.isoformat()}.")
 
     # Bounded read in chunks up to 5 MB
     chunks = []
@@ -1203,18 +1576,33 @@ async def project_upload_image(
             break
         tot += len(chunk)
         if tot > 5 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="File size exceeds the 5 MB limit.")
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File size exceeds the 5 MB limit.",
+            )
         chunks.append(chunk)
 
     file_bytes = b"".join(chunks)
 
     try:
-        url = validate_and_save_image(file_bytes, file.filename or "", project_id=project.id)
-        project.thumbnail_url = url
-        db.commit()
-        return {"status": "ok", "url": url}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        updated_proj, url = update_project_thumbnail(
+            db=db,
+            project_id=project_id,
+            file_bytes=file_bytes,
+            original_filename=file.filename or "",
+            account=account,
+            expected_version=parsed_expected_ver,
+        )
+        return {"status": "ok", "url": url, "version": updated_proj.version}
+    except ConcurrencyConflictError as cce:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(cce))
+    except PermissionError as pe:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(pe))
+    except ValueError as ve:
+        msg = str(ve).lower()
+        if "closed" in msg or "not open" in msg or "deadline" in msg:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(ve))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
 @app.post("/teams/{team_id}/invitations/{invitation_id}/revoke", summary="Revoke pending team invitation")

@@ -68,6 +68,8 @@ def test_submission_draft_and_final_lifecycle(sub_db):
         repo_url="https://github.com/alice/project-v2",
         track_id=track.id,
         is_final_submission=False,
+        project_id=proj.id,
+        expected_version=1,
     )
     assert proj_updated.status == "draft"
     assert proj_updated.version == 2
@@ -84,6 +86,8 @@ def test_submission_draft_and_final_lifecycle(sub_db):
         repo_url="https://github.com/alice/project-final",
         track_id=track.id,
         is_final_submission=True,
+        project_id=proj_updated.id,
+        expected_version=2,
     )
     assert proj_final.status == "submitted"
     assert proj_final.version == 3
@@ -346,6 +350,7 @@ def test_custom_questions_validation(sub_db):
             track_id=track.id,
             is_final_submission=True,
             project_id=draft.id,
+            expected_version=1,
             answers={},
         )
 
@@ -360,7 +365,50 @@ def test_custom_questions_validation(sub_db):
         track_id=track.id,
         is_final_submission=True,
         project_id=draft.id,
+        expected_version=1,
         answers={"q_arch_1": "Serverless AWS Lambda & PostgreSQL"},
     )
     assert submitted.status == "submitted"
     assert submitted.answers["q_arch_1"] == "Serverless AWS Lambda & PostgreSQL"
+
+
+def test_mandatory_expected_version_on_project_update(sub_db):
+    """Verify that updating an existing project without expected_version strictly raises ConcurrencyConflictError."""
+    from app.services import ConcurrencyConflictError
+
+    user = create_account(sub_db, email="mand_occ@test.local", password="Password123!", name="Mand Dev")
+    event = create_event(
+        sub_db,
+        event_id="evt_mand_occ",
+        name="Mandatory OCC Event",
+        submissions_close=datetime.now(timezone.utc) + timedelta(days=5),
+    )
+    track = Track(id="trk_mand", event_id=event.id, name="Mand Track")
+    sub_db.add(track)
+    sub_db.commit()
+
+    team = create_team(sub_db, event_id=event.id, name="Mand Team", creator_account=user)
+    p = save_project_draft_or_submission(
+        db=sub_db,
+        event_id=event.id,
+        team_id=team.id,
+        account=user,
+        title="Original",
+        summary="Original Summary",
+        track_id=track.id,
+    )
+    assert p.version == 1
+
+    # Attempt update without expected_version (None) -> must raise ConcurrencyConflictError
+    with pytest.raises(ConcurrencyConflictError, match="'expected_version' is required"):
+        save_project_draft_or_submission(
+            db=sub_db,
+            event_id=event.id,
+            team_id=team.id,
+            account=user,
+            title="Updated Without Version",
+            summary="Attempted update",
+            track_id=track.id,
+            project_id=p.id,
+            expected_version=None,
+        )

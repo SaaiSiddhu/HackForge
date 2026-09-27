@@ -10,7 +10,7 @@
 <div class="project-header">
   <div class="eyebrow">Organizer Dashboard</div>
   <h1 style="margin: 8px 0 12px;">{{ event.name }}</h1>
-  <p class="intro">Configure deadlines, team capacity, and review system audit records.</p>
+  <p class="intro">Configure dates, team capacity, tracks, prizes, custom questions, and review audit records.</p>
 </div>
 
 {% if success_msg %}
@@ -48,54 +48,231 @@
         </div>
       </div>
 
-      <div class="form-group">
-        <label for="submissions_close">Submissions Deadline (ISO UTC)</label>
-        <input type="text" id="submissions_close" name="submissions_close" value="{{ event.submissions_close.isoformat() }}" required>
-        <span class="hint">Format: YYYY-MM-DDTHH:MM:SS+00:00</span>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+        <div class="form-group">
+          <label for="registration_open">Registration Open (ISO UTC)</label>
+          <input type="text" id="registration_open" name="registration_open" value="{{ event.registration_open.isoformat() if event.registration_open else '' }}" placeholder="YYYY-MM-DDTHH:MM:SS+00:00">
+        </div>
+        <div class="form-group">
+          <label for="registration_close">Registration Close (ISO UTC)</label>
+          <input type="text" id="registration_close" name="registration_close" value="{{ event.registration_close.isoformat() if event.registration_close else '' }}" placeholder="YYYY-MM-DDTHH:MM:SS+00:00">
+        </div>
       </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+        <div class="form-group">
+          <label for="submissions_open">Submissions Open (ISO UTC)</label>
+          <input type="text" id="submissions_open" name="submissions_open" value="{{ event.submissions_open.isoformat() if event.submissions_open else '' }}" placeholder="YYYY-MM-DDTHH:MM:SS+00:00">
+        </div>
+        <div class="form-group">
+          <label for="submissions_close">Submissions Deadline * (ISO UTC)</label>
+          <input type="text" id="submissions_close" name="submissions_close" value="{{ event.submissions_close.isoformat() }}" required>
+        </div>
+      </div>
+      <span class="hint" style="margin-top: -8px; margin-bottom: 16px; display: block;">Timestamps must be ISO 8601 UTC (e.g. 2026-10-15T18:00:00+00:00).</span>
 
       <button type="submit" class="btn btn-primary">Save Configuration</button>
     </form>
   </div>
 
-  <!-- Audit Log & Overview -->
+  <!-- Tracks & Prizes Column -->
   <div>
-    <div class="card">
+    <!-- Tracks Management -->
+    <div class="card" style="margin-bottom: 24px;">
       <h2>Tracks ({{ tracks|length }})</h2>
-      <ul style="padding-left: 20px; margin: 12px 0; color: var(--text-secondary);">
-        {% for track in tracks %}
-          <li><strong>{{ track.name }}</strong> <code style="font-size: 12px;">{{ track.id }}</code></li>
-        {% endfor %}
-      </ul>
-    </div>
-
-    <div class="card">
-      <h2>Recent Audit Log</h2>
-      {% if audit_logs %}
-        <div class="table-responsive">
+      {% if tracks %}
+        <div class="table-responsive" style="margin-bottom: 16px;">
           <table>
             <thead>
               <tr>
+                <th>Track Name</th>
+                <th>ID</th>
+                <th>Submissions</th>
                 <th>Action</th>
-                <th>Time (UTC)</th>
-                <th>Details</th>
               </tr>
             </thead>
             <tbody>
-              {% for log in audit_logs %}
+              {% for track in tracks %}
                 <tr>
-                  <td><code>{{ log.action }}</code></td>
-                  <td style="font-size: 12px; color: var(--text-muted);">{{ log.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                  <td style="font-size: 12px;"><pre style="margin: 0; white-space: pre-wrap; font-family: inherit;">{{ log.payload }}</pre></td>
+                  <td><strong>{{ track.name }}</strong></td>
+                  <td><code style="font-size: 11px;">{{ track.id }}</code></td>
+                  <td>{{ track.project_count if track.project_count is defined else '0' }}</td>
+                  <td>
+                    <form method="POST" action="/events/{{ event.id }}/tracks/{{ track.id }}/delete" style="display:inline;">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <button type="submit" class="btn btn-secondary btn-sm" {% if track.project_count is defined and track.project_count > 0 %}title="Referenced by projects" disabled{% endif %}>Delete</button>
+                    </form>
+                  </td>
                 </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
       {% else %}
-        <p style="color: var(--text-muted); font-size: 14px;">No audit events recorded yet.</p>
+        <p style="color: var(--text-muted); font-size: 14px;">No tracks configured.</p>
       {% endif %}
+
+      <form method="POST" action="/events/{{ event.id }}/tracks" style="display: flex; gap: 8px; align-items: flex-end;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-group" style="flex: 1; margin-bottom: 0;">
+          <label for="track_name" style="font-size: 12px;">Add New Track</label>
+          <input type="text" id="track_name" name="name" placeholder="Track Name (e.g. AI & ML)" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm" style="height: 38px;">Add Track</button>
+      </form>
     </div>
+
+    <!-- Prizes Management -->
+    <div class="card" style="margin-bottom: 24px;">
+      <h2>Prizes ({{ prizes|length }})</h2>
+      {% if prizes %}
+        <div class="table-responsive" style="margin-bottom: 16px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Prize</th>
+                <th>Amount</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in prizes %}
+                <tr>
+                  <td>
+                    <strong>{{ p.title if p.title is defined else p }}</strong>
+                    {% if p.description is defined and p.description %}
+                      <div style="font-size: 12px; color: var(--text-muted);">{{ p.description }}</div>
+                    {% endif %}
+                  </td>
+                  <td>{{ p.amount if p.amount is defined else '' }}</td>
+                  <td>
+                    <form method="POST" action="/events/{{ event.id }}/prizes/{{ p.id if (p.id is defined and p.id) else loop.index0 }}/delete" style="display:inline;">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <button type="submit" class="btn btn-secondary btn-sm">Delete</button>
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p style="color: var(--text-muted); font-size: 14px;">No prizes configured.</p>
+      {% endif %}
+
+      <form method="POST" action="/events/{{ event.id }}/prizes" style="display: grid; grid-template-columns: 2fr 1fr auto; gap: 8px; align-items: flex-end;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="prize_title" style="font-size: 12px;">Prize Title</label>
+          <input type="text" id="prize_title" name="title" placeholder="1st Place Winner" required>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="prize_amount" style="font-size: 12px;">Amount / Value</label>
+          <input type="text" id="prize_amount" name="amount" placeholder="$2,500">
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm" style="height: 38px;">Add Prize</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Custom Questions & Audit Log Section -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;">
+  <!-- Custom Questions Management -->
+  <div class="card">
+    <h2>Custom Submission Questions ({{ questions|length }})</h2>
+    <p class="hint" style="margin-bottom: 16px;">Questions have persistent IDs; existing project responses remain stable if questions are added or removed.</p>
+    {% if questions %}
+      <div class="table-responsive" style="margin-bottom: 16px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Question Label</th>
+              <th>Type</th>
+              <th>Required</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for q in questions %}
+              <tr>
+                <td>
+                  <strong>{{ q.label }}</strong>
+                  <div style="font-size: 11px; color: var(--text-muted);">ID: <code>{{ q.id }}</code></div>
+                </td>
+                <td><code>{{ q.question_type }}</code></td>
+                <td>
+                  <span class="status-badge {{ 'status-submitted' if q.required else 'status-draft' }}">
+                    {{ 'Required' if q.required else 'Optional' }}
+                  </span>
+                </td>
+                <td>
+                  <form method="POST" action="/events/{{ event.id }}/questions/{{ q.id }}/delete" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-secondary btn-sm">Delete</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p style="color: var(--text-muted); font-size: 14px;">No custom questions configured.</p>
+    {% endif %}
+
+    <form method="POST" action="/events/{{ event.id }}/questions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-group">
+        <label for="q_label">Question Prompt / Label</label>
+        <input type="text" id="q_label" name="label" placeholder="e.g. Architecture Overview & System Design" required>
+      </div>
+      <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 16px;">
+        <div style="flex: 1;">
+          <label for="q_type" style="font-size: 12px;">Type</label>
+          <select id="q_type" name="question_type">
+            <option value="text">Text Input</option>
+            <option value="textarea">Multi-line Text</option>
+          </select>
+        </div>
+        <div style="padding-top: 18px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" name="required" value="true">
+            <span>Required for submission</span>
+          </label>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">Add Question</button>
+    </form>
+  </div>
+
+  <!-- Audit Log -->
+  <div class="card">
+    <h2>Recent Audit Log</h2>
+    {% if audit_logs %}
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th>Time (UTC)</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for log in audit_logs %}
+              <tr>
+                <td><code>{{ log.action }}</code></td>
+                <td style="font-size: 12px; color: var(--text-muted);">{{ log.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td style="font-size: 12px;"><pre style="margin: 0; white-space: pre-wrap; font-family: inherit;">{{ log.payload }}</pre></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p style="color: var(--text-muted); font-size: 14px;">No audit events recorded yet.</p>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

@@ -3,8 +3,9 @@ import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 from .auth import hash_password, verify_password
 from .config import get_settings
@@ -43,12 +44,12 @@ class ConcurrencyConflictError(ValueError):
 # --- Image Upload Service ---
 
 
-def validate_and_save_image(
+def validate_and_save_image_with_path(
     file_bytes: bytes,
     original_filename: str = "",
     project_id: str = "general",
-) -> str:
-    """Validate image with Pillow, enforce max 4096px bounds, re-encode cleanly, and persist."""
+) -> tuple[str, Path]:
+    """Validate image with Pillow, enforce max 4096px bounds, re-encode cleanly, and persist. Returns (url, file_path)."""
     settings = get_settings()
     max_size = 5 * 1024 * 1024  # 5 MB
     if len(file_bytes) > max_size:
@@ -106,7 +107,21 @@ def validate_and_save_image(
     target_path = target_dir / filename
     target_path.write_bytes(clean_bytes)
 
-    return f"/projects/{safe_project_id}/media/{filename}"
+    return f"/projects/{safe_project_id}/media/{filename}", target_path
+
+
+def validate_and_save_image(
+    file_bytes: bytes,
+    original_filename: str = "",
+    project_id: str = "general",
+) -> str:
+    """Validate image and persist, returning public URL."""
+    url, _ = validate_and_save_image_with_path(
+        file_bytes=file_bytes,
+        original_filename=original_filename,
+        project_id=project_id,
+    )
+    return url
 
 
 # --- Account Service ---
@@ -624,6 +639,113 @@ def accept_team_invitation(
 # --- Project Submission Lifecycle Service ---
 
 
+def update_project_thumbnail(
+    db: Session,
+    project_id: str,
+    file_bytes: bytes,
+    original_filename: str,
+    account: Account,
+    expected_version: Optional[int],
+) -> tuple[Project, str]:
+    """Update project thumbnail with unified policy: auth, ownership, deadlines, expected_version, row locking, atomic audit, and file cleanup on error."""
+    if not account:
+        raise ValueError("Authentication required.")
+
+    if expected_version is None or not isinstance(expected_version, int):
+        raise ConcurrencyConflictError(
+            "Conflict: 'expected_version' is required for project thumbnail updates."
+        )
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise ValueError(f"Project '{project_id}' not found.")
+
+    # Authorization check
+    is_member = db.scalars(
+        select(TeamMembership).where(
+            TeamMembership.team_id == project.team_id,
+            TeamMembership.account_id == account.id,
+        )
+    ).first() is not None
+    if not is_member and not account.is_platform_admin:
+        raise PermissionError("Forbidden: You must be a member of this team to update media.")
+
+    event = db.get(Event, project.event_id)
+    if not event:
+        raise ValueError("Event not found.")
+
+    # Pre-processing deadline check (inclusive cutoff cur >= s_close refuses submission)
+    now = datetime.now(timezone.utc)
+    s_open = ensure_utc(event.submissions_open)
+    s_close = ensure_utc(event.submissions_close)
+    if s_open and now < s_open:
+        raise ValueError(f"Submissions for {event.name} have not opened yet.")
+    if s_close and now >= s_close:
+        raise ValueError(f"Submissions for {event.name} closed on {s_close.isoformat()}.")
+
+    # Image validation & clean write to disk
+    url, target_path = validate_and_save_image_with_path(
+        file_bytes=file_bytes,
+        original_filename=original_filename,
+        project_id=project.id,
+    )
+
+    try:
+        # Acquire row lock
+        stmt = select(Project).where(Project.id == project.id).with_for_update()
+        locked_project = db.scalars(stmt).first()
+        if not locked_project:
+            raise ValueError(f"Project '{project.id}' not found during lock acquisition.")
+        db.refresh(locked_project)
+
+        # Fresh deadline evaluation post-processing / post-lock
+        fresh_event = db.get(Event, project.event_id)
+        fresh_open = ensure_utc(fresh_event.submissions_open)
+        fresh_close = ensure_utc(fresh_event.submissions_close)
+        now_fresh = datetime.now(timezone.utc)
+        if fresh_open and now_fresh < fresh_open:
+            raise ValueError(f"Submissions for {fresh_event.name} have not opened yet.")
+        if fresh_close and now_fresh >= fresh_close:
+            raise ValueError(f"Submissions for {fresh_event.name} closed on {fresh_close.isoformat()}.")
+
+        # Concurrency version check
+        if locked_project.version != expected_version:
+            raise ConcurrencyConflictError(
+                f"Conflict: Project has been modified by another teammate (current version {locked_project.version}, expected version {expected_version}). Please reload and retry."
+            )
+
+        # Atomic update and version increment
+        locked_project.thumbnail_url = url
+        locked_project.version = expected_version + 1
+        locked_project.updated_at = now_fresh
+
+        # Atomic audit log in the same transaction
+        record_audit_log(
+            db,
+            event_id=locked_project.event_id,
+            action="project_thumbnail_updated",
+            payload={
+                "project_id": locked_project.id,
+                "thumbnail_url": url,
+                "version": locked_project.version,
+            },
+            account_id=account.id,
+            commit=False,
+        )
+        db.commit()
+        db.refresh(locked_project)
+        return locked_project, url
+    except Exception:
+        # Clean up newly created file on disk immediately to prevent orphaned files
+        try:
+            if target_path.exists():
+                target_path.unlink()
+        except Exception as cleanup_err:
+            logger.warning(f"Failed to remove orphaned file '{target_path}': {cleanup_err}")
+        db.rollback()
+        raise
+
+
 def save_project_draft_or_submission(
     db: Session,
     event_id: str,
@@ -646,7 +768,7 @@ def save_project_draft_or_submission(
     expected_version: Optional[int] = None,
     new_project_id: Optional[str] = None,
 ) -> Project:
-    """Create or update a project draft or final submission with deadline and concurrency enforcement."""
+    """Create or update a project draft or final submission with deadline and atomic concurrency enforcement."""
     event = db.get(Event, event_id)
     if not event:
         raise ValueError(f"Event '{event_id}' not found.")
@@ -727,45 +849,68 @@ def save_project_draft_or_submission(
     target_status = "submitted" if is_final_submission else "draft"
 
     if existing_project:
-        # Optimistic concurrency check
-        if expected_version is not None and existing_project.version != expected_version:
+        # Mandatory expected_version on updates to existing projects
+        if expected_version is None or not isinstance(expected_version, int):
             raise ConcurrencyConflictError(
-                f"Conflict: Project has been modified by another teammate (current version {existing_project.version}, expected version {expected_version}). Please reload and retry."
+                "Conflict: 'expected_version' is required when updating an existing project."
+            )
+
+        # Database-backed row locking to serialize concurrent writers
+        stmt = select(Project).where(Project.id == existing_project.id).with_for_update()
+        locked_project = db.scalars(stmt).first()
+        if not locked_project:
+            raise ValueError(f"Project '{existing_project.id}' not found.")
+        db.refresh(locked_project)
+
+        # Fresh deadline evaluation post-lock
+        fresh_event = db.get(Event, event_id)
+        fresh_open = ensure_utc(fresh_event.submissions_open)
+        fresh_close = ensure_utc(fresh_event.submissions_close)
+        now_fresh = datetime.now(timezone.utc)
+        if fresh_open and now_fresh < fresh_open:
+            raise ValueError(f"Submissions for {fresh_event.name} have not opened yet.")
+        if fresh_close and now_fresh >= fresh_close:
+            raise ValueError(f"Submissions for {fresh_event.name} closed on {fresh_close.isoformat()}.")
+
+        # Atomic optimistic concurrency check
+        if locked_project.version != expected_version:
+            raise ConcurrencyConflictError(
+                f"Conflict: Project has been modified by another teammate (current version {locked_project.version}, expected version {expected_version}). Please reload and retry."
             )
 
         # Update existing project
-        existing_project.title = clean_title
-        existing_project.summary = clean_summary
-        existing_project.repo_url = repo_url.strip()
-        existing_project.track_id = track_id
-        existing_project.tagline = tagline.strip()
-        existing_project.description = description.strip()
-        existing_project.demo_url = demo_url.strip()
-        existing_project.video_url = video_url.strip()
-        existing_project.tech_tags = tech_tags or []
-        existing_project.status = target_status
+        locked_project.title = clean_title
+        locked_project.summary = clean_summary
+        locked_project.repo_url = repo_url.strip()
+        locked_project.track_id = track_id
+        locked_project.tagline = tagline.strip()
+        locked_project.description = description.strip()
+        locked_project.demo_url = demo_url.strip()
+        locked_project.video_url = video_url.strip()
+        locked_project.tech_tags = tech_tags or []
+        locked_project.status = target_status
         if thumbnail_url:
-            existing_project.thumbnail_url = thumbnail_url
+            locked_project.thumbnail_url = thumbnail_url
         if gallery_urls is not None:
-            existing_project.gallery_urls = gallery_urls
+            locked_project.gallery_urls = gallery_urls
         if answers is not None:
-            existing_project.answers = answers
-        existing_project.version += 1
-        existing_project.updated_at = now
+            locked_project.answers = answers
+        locked_project.version = expected_version + 1
+        locked_project.updated_at = now_fresh
         if is_final_submission:
-            existing_project.submitted_at = now
+            locked_project.submitted_at = now_fresh
 
         record_audit_log(
             db,
             event_id=event_id,
             action="project_submitted" if is_final_submission else "project_updated",
-            payload={"project_id": existing_project.id, "title": existing_project.title, "status": target_status, "version": existing_project.version},
+            payload={"project_id": locked_project.id, "title": locked_project.title, "status": target_status, "version": locked_project.version},
             account_id=account.id,
             commit=False,
         )
         db.commit()
-        db.refresh(existing_project)
-        return existing_project
+        db.refresh(locked_project)
+        return locked_project
 
     # Create new project
     pid = new_project_id or project_id or f"prj_{uuid.uuid4().hex[:10]}"
@@ -803,6 +948,224 @@ def save_project_draft_or_submission(
     db.commit()
     db.refresh(project)
     return project
+
+
+def create_event_track(
+    db: Session,
+    event_id: str,
+    name: str,
+    track_id: Optional[str] = None,
+    actor_account_id: Optional[str] = None,
+) -> Track:
+    """Create a new track for an event."""
+    event = db.get(Event, event_id)
+    if not event:
+        raise ValueError(f"Event '{event_id}' not found.")
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("Track name cannot be empty.")
+
+    tid = track_id or f"trk_{uuid.uuid4().hex[:8]}"
+    track = Track(id=tid, event_id=event_id, name=clean_name)
+    db.add(track)
+
+    record_audit_log(
+        db,
+        event_id=event_id,
+        action="track_created",
+        payload={"track_id": tid, "name": clean_name},
+        account_id=actor_account_id,
+        commit=False,
+    )
+    db.commit()
+    db.refresh(track)
+    return track
+
+
+def delete_event_track(
+    db: Session,
+    event_id: str,
+    track_id: str,
+    actor_account_id: Optional[str] = None,
+) -> None:
+    """Delete a track, preventing deletion if any existing project submissions reference it."""
+    track = db.get(Track, track_id)
+    if not track or track.event_id != event_id:
+        raise ValueError("Track not found for this event.")
+
+    project_count = db.scalar(
+        select(func.count(Project.id)).where(Project.track_id == track_id)
+    ) or 0
+    if project_count > 0:
+        raise ValueError(
+            f"Cannot delete track '{track.name}': it is referenced by {project_count} existing project submission(s)."
+        )
+
+    track_name = track.name
+    db.delete(track)
+    record_audit_log(
+        db,
+        event_id=event_id,
+        action="track_deleted",
+        payload={"track_id": track_id, "name": track_name},
+        account_id=actor_account_id,
+        commit=False,
+    )
+    db.commit()
+
+
+def add_event_prize(
+    db: Session,
+    event_id: str,
+    title: str,
+    description: str = "",
+    amount: str = "",
+    actor_account_id: Optional[str] = None,
+) -> list[dict]:
+    """Add a prize to an event."""
+    event = db.get(Event, event_id)
+    if not event:
+        raise ValueError(f"Event '{event_id}' not found.")
+    clean_title = title.strip()
+    if not clean_title:
+        raise ValueError("Prize title cannot be empty.")
+
+    prizes = list(event.prizes or [])
+    new_prize = {
+        "id": f"prz_{uuid.uuid4().hex[:8]}",
+        "title": clean_title,
+        "description": description.strip() if description else "",
+        "amount": amount.strip() if amount else "",
+    }
+    prizes.append(new_prize)
+    event.prizes = prizes
+
+    record_audit_log(
+        db,
+        event_id=event_id,
+        action="prize_added",
+        payload=new_prize,
+        account_id=actor_account_id,
+        commit=False,
+    )
+    db.commit()
+    db.refresh(event)
+    return event.prizes
+
+
+def delete_event_prize(
+    db: Session,
+    event_id: str,
+    prize_id_or_idx: Any,
+    actor_account_id: Optional[str] = None,
+) -> list[dict]:
+    """Delete a prize from an event by ID or 0-based index."""
+    event = db.get(Event, event_id)
+    if not event:
+        raise ValueError(f"Event '{event_id}' not found.")
+
+    prizes = list(event.prizes or [])
+    deleted_prize = None
+
+    # Try matching by ID first
+    for i, p in enumerate(prizes):
+        if isinstance(p, dict) and p.get("id") == str(prize_id_or_idx):
+            deleted_prize = prizes.pop(i)
+            break
+
+    # If not found by ID, try numeric index
+    if deleted_prize is None:
+        try:
+            idx = int(prize_id_or_idx)
+            if 0 <= idx < len(prizes):
+                deleted_prize = prizes.pop(idx)
+        except (ValueError, TypeError):
+            pass
+
+    if deleted_prize is None:
+        raise ValueError(f"Prize '{prize_id_or_idx}' not found.")
+
+    event.prizes = prizes
+    record_audit_log(
+        db,
+        event_id=event_id,
+        action="prize_deleted",
+        payload=deleted_prize if isinstance(deleted_prize, dict) else {"item": deleted_prize},
+        account_id=actor_account_id,
+        commit=False,
+    )
+    db.commit()
+    db.refresh(event)
+    return event.prizes
+
+
+def create_event_question(
+    db: Session,
+    event_id: str,
+    label: str,
+    question_type: str = "text",
+    required: bool = False,
+    options: Optional[list] = None,
+    question_id: Optional[str] = None,
+    actor_account_id: Optional[str] = None,
+) -> EventQuestion:
+    """Create a custom question for an event with persistent ID."""
+    event = db.get(Event, event_id)
+    if not event:
+        raise ValueError(f"Event '{event_id}' not found.")
+    clean_label = label.strip()
+    if not clean_label:
+        raise ValueError("Question label cannot be empty.")
+
+    count = db.scalar(
+        select(func.count(EventQuestion.id)).where(EventQuestion.event_id == event_id)
+    ) or 0
+    qid = question_id or f"qst_{uuid.uuid4().hex[:8]}"
+    question = EventQuestion(
+        id=qid,
+        event_id=event_id,
+        label=clean_label,
+        question_type=question_type,
+        required=required,
+        options=options or [],
+        order_idx=count,
+    )
+    db.add(question)
+    record_audit_log(
+        db,
+        event_id=event_id,
+        action="question_created",
+        payload={"question_id": qid, "label": clean_label, "required": required},
+        account_id=actor_account_id,
+        commit=False,
+    )
+    db.commit()
+    db.refresh(question)
+    return question
+
+
+def delete_event_question(
+    db: Session,
+    event_id: str,
+    question_id: str,
+    actor_account_id: Optional[str] = None,
+) -> None:
+    """Delete a question from an event without mutating historical project answers."""
+    question = db.get(EventQuestion, question_id)
+    if not question or question.event_id != event_id:
+        raise ValueError("Question not found for this event.")
+
+    q_label = question.label
+    db.delete(question)
+    record_audit_log(
+        db,
+        event_id=event_id,
+        action="question_deleted",
+        payload={"question_id": question_id, "label": q_label},
+        account_id=actor_account_id,
+        commit=False,
+    )
+    db.commit()
 
 
 def revoke_team_invitation(
