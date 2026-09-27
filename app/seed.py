@@ -14,8 +14,14 @@ from .models import (
     Event,
     EventRole,
     Judge,
+    JudgeAssignment,
+    JudgeInvitation,
+    JudgeTrackPermission,
     Project,
     Review,
+    ReviewCriterionScore,
+    Rubric,
+    RubricCriterion,
     SessionModel,
     Team,
     TeamMembership,
@@ -184,14 +190,21 @@ def seed(
                 "Set ALLOW_DESTRUCTIVE_RESET=true in non-production environments to allow reset."
             )
         logger.warning("Operator requested explicit database reset before seeding.")
+        session.query(ReviewCriterionScore).delete()
+        session.query(JudgeAssignment).delete()
         session.query(Review).delete()
         session.query(Project).delete()
+        session.query(JudgeTrackPermission).delete()
+        session.query(JudgeInvitation).delete()
         session.query(Judge).delete()
         session.query(Team).delete()
         session.query(Track).delete()
+        session.query(RubricCriterion).delete()
+        session.query(Rubric).delete()
         session.query(Event).delete()
         session.flush()
 
+    now = datetime.now(timezone.utc)
     event_data = data["event"]
     event_id = event_data["id"]
 
@@ -228,6 +241,28 @@ def seed(
             stats["teams_inserted"] += 1
     session.flush()
 
+    # Rubric (Default v1)
+    rubric_id = f"rb_{event_id}_v1"
+    if session.get(Rubric, rubric_id) is None:
+        session.add(Rubric(id=rubric_id, event_id=event_id, version=1, name="Default Rubric", is_active=True, created_at=now))
+        session.flush()
+        for idx, (ckey, cname) in enumerate([
+            ("functionality", "Functionality & Execution"),
+            ("quality", "Code & Technical Quality"),
+            ("innovation", "Innovation & Originality"),
+        ]):
+            session.add(RubricCriterion(
+                id=f"rc_{rubric_id}_{ckey}",
+                rubric_id=rubric_id,
+                key=ckey,
+                name=cname,
+                weight=1.0,
+                min_score=1.0,
+                max_score=5.0,
+                order_idx=idx,
+            ))
+        session.flush()
+
     # Judges
     for j in data["judges"]:
         if session.get(Judge, j["id"]) is None:
@@ -239,6 +274,11 @@ def seed(
                 tracks=j["tracks"],
             ))
             stats["judges_inserted"] += 1
+            session.flush()
+        for trk in j["tracks"]:
+            jt_id = f"jt_{j['id']}_{trk}"
+            if session.get(JudgeTrackPermission, jt_id) is None:
+                session.add(JudgeTrackPermission(id=jt_id, judge_id=j["id"], track_id=trk))
     session.flush()
 
     # Projects (Preserves deliberate duplicate prj_07 and prj_41 with distinct IDs)
@@ -261,13 +301,51 @@ def seed(
     for s in data["scores"]:
         pair = (s["judge"], s["project"])
         if session.get(Review, pair) is None:
+            tot_weights = 0.0
+            tot_contrib = 0.0
+            for k, val in s["criteria"].items():
+                if isinstance(val, (int, float)):
+                    contrib = (float(val) - 1.0) / 4.0
+                    tot_contrib += contrib
+                    tot_weights += 1.0
+            raw_score = round(100.0 * (tot_contrib / tot_weights), 2) if tot_weights > 0 else None
             session.add(Review(
                 judge_id=s["judge"],
                 project_id=s["project"],
+                event_id=event_id,
+                rubric_id=rubric_id,
                 criteria=s["criteria"],
                 comment=s.get("comment", ""),
+                status="finalized",
+                raw_score=raw_score,
+                version=1,
+                created_at=now,
+                updated_at=now,
             ))
             stats["reviews_inserted"] += 1
+            session.flush()
+
+            for k, val in s["criteria"].items():
+                rcs_id = f"rcs_{s['judge']}_{s['project']}_{k}"
+                if session.get(ReviewCriterionScore, rcs_id) is None:
+                    session.add(ReviewCriterionScore(
+                        id=rcs_id,
+                        judge_id=s["judge"],
+                        project_id=s["project"],
+                        criterion_id=f"rc_{rubric_id}_{k}",
+                        criterion_key=k,
+                        score=float(val),
+                    ))
+
+            asgn_id = f"asgn_{s['judge']}_{s['project']}"
+            if session.get(JudgeAssignment, asgn_id) is None:
+                session.add(JudgeAssignment(
+                    id=asgn_id,
+                    event_id=event_id,
+                    judge_id=s["judge"],
+                    project_id=s["project"],
+                    assigned_at=now,
+                ))
     session.flush()
 
     # Seed Phase 2 demo accounts, sessions, and open demonstration event if requested
@@ -443,6 +521,55 @@ def seed_demo_accounts_and_event(session: Session) -> dict[str, int]:
             event_id=open_evt_id,
             role="captain",
             joined_at=now,
+        ))
+
+    # 5. Link demo judges to jdg_01 and jdg_02 in evt_01
+    j1 = session.get(Judge, "jdg_01")
+    if j1:
+        j1.account_id = "acc_jdg_a_demo"
+    j2 = session.get(Judge, "jdg_02")
+    if j2:
+        j2.account_id = "acc_jdg_b_demo"
+
+    # 6. Default rubric for open demo event
+    open_rubric_id = f"rb_{open_evt_id}_v1"
+    if session.get(Rubric, open_rubric_id) is None:
+        session.add(Rubric(id=open_rubric_id, event_id=open_evt_id, version=1, name="Demo Rubric", is_active=True, created_at=now))
+        session.flush()
+        for idx, (ckey, cname) in enumerate([
+            ("functionality", "Functionality & Execution"),
+            ("quality", "Code & Technical Quality"),
+            ("innovation", "Innovation & Originality"),
+        ]):
+            session.add(RubricCriterion(
+                id=f"rc_{open_rubric_id}_{ckey}",
+                rubric_id=open_rubric_id,
+                key=ckey,
+                name=cname,
+                weight=1.0,
+                min_score=1.0,
+                max_score=5.0,
+                order_idx=idx,
+            ))
+
+    # Add demo judges in evt_open_demo if not present
+    if session.get(Judge, "jdg_open_a") is None:
+        session.add(Judge(
+            id="jdg_open_a",
+            event_id=open_evt_id,
+            account_id="acc_jdg_a_demo",
+            name="Judge Alpha",
+            email="judge_a@hackforge.local",
+            tracks=["trk_demo_01", "trk_demo_02"],
+        ))
+    if session.get(Judge, "jdg_open_b") is None:
+        session.add(Judge(
+            id="jdg_open_b",
+            event_id=open_evt_id,
+            account_id="acc_jdg_b_demo",
+            name="Judge Beta",
+            email="judge_b@hackforge.local",
+            tracks=["trk_demo_02", "trk_demo_03"],
         ))
 
     session.flush()

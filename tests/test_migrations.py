@@ -77,6 +77,8 @@ def test_sqlite_clean_migration_cycle(alembic_cfg, tmp_path, monkeypatch):
             "events", "tracks", "teams", "judges", "projects", "reviews",
             "accounts", "sessions", "event_roles", "event_questions",
             "event_audit_logs", "team_memberships", "team_invitations",
+            "judge_tracks", "judge_invitations", "judge_assignments",
+            "rubrics", "rubric_criteria", "review_criterion_scores",
             "alembic_version"
         }
         assert expected_tables.issubset(tables)

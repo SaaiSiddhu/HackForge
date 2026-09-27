@@ -90,7 +90,10 @@ app = FastAPI(
 # Static asset mounts (uploads are access-controlled via /projects/{id}/media/{filename})
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
-templates = Jinja2Templates(directory=ROOT / "templates")
+from .templating import templates, get_request_csrf_token
+from .routers.judging import router as judging_router
+
+app.include_router(judging_router)
 
 
 @app.middleware("http")
@@ -158,18 +161,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
-def get_request_csrf_token(request: Request) -> str:
-    """Extract synchronized CSRF token for template binding."""
-    token = getattr(request.state, "csrf_token", None)
-    if not token:
-        token = request.cookies.get("csrf_token")
-    if not token:
-        token = generate_csrf_token()
-        request.state.csrf_token = token
-    return token
-
-
-templates.env.globals["get_csrf_token"] = get_request_csrf_token
 
 
 # --- Observability / Health Probes ---
@@ -596,6 +587,16 @@ def manage_event_view(
         .limit(20)
     ).all()
 
+    from .judging_services import get_active_rubric, get_organizer_judging_progress
+    from .models import Judge, JudgeInvitation
+
+    rubric = get_active_rubric(db, event_id)
+    judges = db.scalars(select(Judge).where(Judge.event_id == event_id)).all()
+    invitations = db.scalars(
+        select(JudgeInvitation).where(JudgeInvitation.event_id == event_id).order_by(JudgeInvitation.created_at.desc())
+    ).all()
+    judging_progress = get_organizer_judging_progress(db, event_id)
+
     csrf_token = get_request_csrf_token(request)
     return templates.TemplateResponse(
         request=request,
@@ -605,9 +606,14 @@ def manage_event_view(
             "tracks": tracks,
             "questions": questions,
             "prizes": event.prizes or [],
+            "rubric": rubric,
+            "judges": judges,
+            "invitations": invitations,
+            "judging_progress": judging_progress,
             "audit_logs": audit_logs,
             "csrf_token": csrf_token,
             "current_account": account,
+            "invited_token": request.query_params.get("invited"),
         },
     )
 

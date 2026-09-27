@@ -344,7 +344,8 @@ def update_event(
     actor_account_id: Optional[str] = None,
 ) -> Event:
     """Update event configuration and dates with validation."""
-    event = db.get(Event, event_id)
+    stmt = select(Event).where(Event.id == event_id).with_for_update()
+    event = db.scalars(stmt).first()
     if not event:
         raise ValueError(f"Event '{event_id}' not found.")
 
@@ -698,15 +699,15 @@ def update_project_thumbnail(
             raise ValueError(f"Project '{project.id}' not found during lock acquisition.")
         db.refresh(locked_project)
 
-        # Fresh deadline evaluation post-processing / post-lock
-        fresh_event = db.get(Event, project.event_id)
-        fresh_open = ensure_utc(fresh_event.submissions_open)
-        fresh_close = ensure_utc(fresh_event.submissions_close)
+        # Fresh deadline evaluation post-processing / post-lock with explicit db.refresh
+        db.refresh(event)
+        fresh_open = ensure_utc(event.submissions_open)
+        fresh_close = ensure_utc(event.submissions_close)
         now_fresh = datetime.now(timezone.utc)
         if fresh_open and now_fresh < fresh_open:
-            raise ValueError(f"Submissions for {fresh_event.name} have not opened yet.")
+            raise ValueError(f"Submissions for {event.name} have not opened yet.")
         if fresh_close and now_fresh >= fresh_close:
-            raise ValueError(f"Submissions for {fresh_event.name} closed on {fresh_close.isoformat()}.")
+            raise ValueError(f"Submissions for {event.name} closed on {fresh_close.isoformat()}.")
 
         # Concurrency version check
         if locked_project.version != expected_version:
@@ -862,15 +863,15 @@ def save_project_draft_or_submission(
             raise ValueError(f"Project '{existing_project.id}' not found.")
         db.refresh(locked_project)
 
-        # Fresh deadline evaluation post-lock
-        fresh_event = db.get(Event, event_id)
-        fresh_open = ensure_utc(fresh_event.submissions_open)
-        fresh_close = ensure_utc(fresh_event.submissions_close)
+        # Fresh deadline evaluation post-lock with explicit db.refresh
+        db.refresh(event)
+        fresh_open = ensure_utc(event.submissions_open)
+        fresh_close = ensure_utc(event.submissions_close)
         now_fresh = datetime.now(timezone.utc)
         if fresh_open and now_fresh < fresh_open:
-            raise ValueError(f"Submissions for {fresh_event.name} have not opened yet.")
+            raise ValueError(f"Submissions for {event.name} have not opened yet.")
         if fresh_close and now_fresh >= fresh_close:
-            raise ValueError(f"Submissions for {fresh_event.name} closed on {fresh_close.isoformat()}.")
+            raise ValueError(f"Submissions for {event.name} closed on {fresh_close.isoformat()}.")
 
         # Atomic optimistic concurrency check
         if locked_project.version != expected_version:

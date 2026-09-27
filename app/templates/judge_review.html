@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}Evaluate {{ project.title }} · {{ event.name }}{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/events/{{ event.id }}/judge">← Back to Judge Dashboard</a>
+</div>
+
+<div class="project-header">
+  <div class="eyebrow">{{ event.name }} · Rubric v{{ rubric.version }} ({{ rubric.name }})</div>
+  <h1 style="margin: 8px 0 12px;">Evaluate: {{ project.title }}</h1>
+  <p class="intro">
+    Team: <strong>{{ project.team.name if project.team else project.team_id }}</strong> ·
+    Track: <strong>{{ project.track.name if project.track else project.track_id }}</strong>
+    {% if review and review.status %}
+      · <span class="badge" style="background: {{ '#dcfce7' if review.status == 'finalized' else '#fef9c3' }}; color: {{ '#166534' if review.status == 'finalized' else '#854d0e' }}; padding: 2px 8px; border-radius: 4px; font-weight: 600;">Status: {{ review.status | title }} (v{{ review.version }})</span>
+    {% endif %}
+  </p>
+</div>
+
+<!-- Project Overview Card -->
+<div class="card" style="margin-bottom: 24px; padding: 20px;">
+  <h3 style="margin-top: 0; margin-bottom: 8px;">Project Details</h3>
+  {% if project.tagline %}
+    <p style="font-weight: 600; color: #475569; margin-bottom: 12px;">{{ project.tagline }}</p>
+  {% endif %}
+  <p style="white-space: pre-line; margin-bottom: 16px;">{{ project.summary }}</p>
+
+  <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+    {% if project.safe_repo_url %}
+      <a href="{{ project.safe_repo_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="font-size: 13px; text-decoration: none;">View Code Repository ↗</a>
+    {% endif %}
+    {% if project.safe_demo_url %}
+      <a href="{{ project.safe_demo_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="font-size: 13px; text-decoration: none;">View Live Demo ↗</a>
+    {% endif %}
+    <a href="/projects/{{ project.id }}" target="_blank" class="btn btn-secondary" style="font-size: 13px; text-decoration: none;">Open Public Detail ↗</a>
+  </div>
+</div>
+
+{% if error_msg %}
+  <div class="alert alert-danger" style="margin-bottom: 20px;">
+    <strong>Error:</strong> {{ error_msg }}
+  </div>
+{% endif %}
+
+<!-- Evaluation Scoring Form -->
+<div class="card" style="max-width: 800px; padding: 24px;">
+  <form method="POST" action="/events/{{ event.id }}/judge/projects/{{ project.id }}/review">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="expected_version" value="{{ review.version if review else 0 }}">
+
+    <h2 style="font-size: 18px; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+      Rubric Criteria (Weighted Normalized Scale)
+    </h2>
+
+    {% for crit in rubric.criteria %}
+      <div class="form-group" style="margin-bottom: 24px; padding: 16px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
+          <label for="criterion_{{ crit.key }}" style="font-size: 15px; font-weight: 700; color: #0f172a;">
+            {{ crit.name }}
+          </label>
+          <div style="font-size: 12px; color: #64748b;">
+            <span class="badge" style="background: #e0f2fe; color: #0284c7; padding: 2px 6px; border-radius: 4px; font-weight: 600;">Weight: {{ crit.weight }}</span>
+            <span style="margin-left: 6px;">Allowed: {{ crit.min_score }} – {{ crit.max_score }}</span>
+          </div>
+        </div>
+
+        {% if crit.description %}
+          <p style="font-size: 13px; color: #475569; margin: 4px 0 10px;">{{ crit.description }}</p>
+        {% endif %}
+
+        <div style="max-width: 200px;">
+          <input
+            type="number"
+            id="criterion_{{ crit.key }}"
+            name="criterion_{{ crit.key }}"
+            step="any"
+            min="{{ crit.min_score }}"
+            max="{{ crit.max_score }}"
+            value="{{ existing_scores.get(crit.key, '') }}"
+            style="width: 100%; padding: 8px 12px; font-size: 15px; font-weight: 600; border-radius: 6px; border: 1px solid #cbd5e1;"
+            placeholder="{{ crit.min_score }} - {{ crit.max_score }}"
+          >
+        </div>
+      </div>
+    {% endfor %}
+
+    <div class="form-group" style="margin-top: 24px;">
+      <label for="comment" style="font-size: 14px; font-weight: 700; margin-bottom: 6px; display: block;">
+        Judge Feedback & Notes
+      </label>
+      <textarea
+        id="comment"
+        name="comment"
+        rows="4"
+        style="width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-family: inherit; font-size: 14px;"
+        placeholder="Constructive feedback, technical observations, and scoring rationale..."
+      >{{ review.comment if review else '' }}</textarea>
+    </div>
+
+    <div style="display: flex; gap: 16px; margin-top: 28px; justify-content: flex-end;">
+      <button type="submit" name="action" value="draft" class="btn btn-secondary">
+        Save Draft
+      </button>
+      <button type="submit" name="action" value="finalize" class="btn btn-primary">
+        Finalize Evaluation
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}

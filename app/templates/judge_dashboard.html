@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Judge Dashboard · {{ event.name }}{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/events">← Back to Events</a>
+</div>
+
+<div class="project-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px;">
+  <div>
+    <div class="eyebrow">{{ event.name }} · Private Judge Portal</div>
+    <h1 style="margin: 8px 0 12px;">Assigned Evaluations</h1>
+    <p class="intro">
+      Judge: <strong>{{ judge.name }}</strong> ({{ judge.email }}) ·
+      Permitted Tracks:
+      {% for trk in judge.tracks %}
+        <span class="badge" style="background: #e2e8f0; color: #334155; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 4px;">{{ trk }}</span>
+      {% endfor %}
+    </p>
+  </div>
+</div>
+
+<!-- Filter Bar -->
+<div class="card" style="margin-bottom: 24px; padding: 16px 20px;">
+  <form method="GET" action="/events/{{ event.id }}/judge" style="display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap;">
+    <div style="flex: 1; min-width: 200px;">
+      <label for="track" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Filter by Track</label>
+      <select id="track" name="track" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color, #cbd5e1);">
+        <option value="">All Tracks</option>
+        {% for t in tracks %}
+          <option value="{{ t.id }}" {% if selected_track == t.id %}selected{% endif %}>{{ t.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div style="flex: 1; min-width: 200px;">
+      <label for="status_filter" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Evaluation Status</label>
+      <select id="status_filter" name="status_filter" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color, #cbd5e1);">
+        <option value="">All Statuses</option>
+        <option value="unstarted" {% if selected_status == 'unstarted' %}selected{% endif %}>Not Started</option>
+        <option value="in_progress" {% if selected_status == 'in_progress' %}selected{% endif %}>Draft Saved</option>
+        <option value="completed" {% if selected_status == 'completed' %}selected{% endif %}>Finalized</option>
+      </select>
+    </div>
+
+    <div>
+      <button type="submit" class="btn btn-secondary" style="height: 38px;">Apply Filters</button>
+      {% if selected_track or selected_status %}
+        <a href="/events/{{ event.id }}/judge" class="btn btn-secondary" style="height: 38px; display: inline-flex; align-items: center; text-decoration: none; margin-left: 8px;">Reset</a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+<!-- Assigned Projects List -->
+{% if assigned_projects %}
+  <div class="card" style="padding: 0; overflow-x: auto;">
+    <table style="width: 100%; border-collapse: collapse; text-align: left;">
+      <thead>
+        <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0;">
+          <th style="padding: 12px 16px; font-size: 13px; font-weight: 700;">Project</th>
+          <th style="padding: 12px 16px; font-size: 13px; font-weight: 700;">Track</th>
+          <th style="padding: 12px 16px; font-size: 13px; font-weight: 700;">Team</th>
+          <th style="padding: 12px 16px; font-size: 13px; font-weight: 700;">Status</th>
+          <th style="padding: 12px 16px; font-size: 13px; font-weight: 700;">Raw Score</th>
+          <th style="padding: 12px 16px; font-size: 13px; font-weight: 700; text-align: right;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in assigned_projects %}
+          <tr style="border-bottom: 1px solid #e2e8f0;">
+            <td style="padding: 14px 16px;">
+              <div style="font-weight: 600; font-size: 15px; color: var(--text-color, #0f172a);">{{ p.title }}</div>
+              {% if p.tagline %}
+                <div style="font-size: 13px; color: #64748b; margin-top: 2px;">{{ p.tagline }}</div>
+              {% endif %}
+            </td>
+            <td style="padding: 14px 16px;">
+              <span class="badge" style="background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{{ p.track_name }}</span>
+            </td>
+            <td style="padding: 14px 16px; font-size: 14px; color: #334155;">{{ p.team_name }}</td>
+            <td style="padding: 14px 16px;">
+              {% if p.review_status == 'finalized' %}
+                <span class="status-badge" style="background: #dcfce7; color: #166534; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;">Finalized</span>
+              {% elif p.review_status == 'draft' %}
+                <span class="status-badge" style="background: #fef9c3; color: #854d0e; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;">Draft Saved</span>
+              {% else %}
+                <span class="status-badge" style="background: #f1f5f9; color: #475569; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;">Not Started</span>
+              {% endif %}
+            </td>
+            <td style="padding: 14px 16px; font-size: 14px; font-weight: 600;">
+              {% if p.raw_score is not none %}
+                {{ p.raw_score }} / 100
+              {% else %}
+                <span style="color: #94a3b8;">—</span>
+              {% endif %}
+            </td>
+            <td style="padding: 14px 16px; text-align: right;">
+              <a href="/events/{{ event.id }}/judge/projects/{{ p.project_id }}/review" class="btn btn-primary" style="padding: 6px 14px; font-size: 13px; text-decoration: none;">
+                {% if p.review_status == 'finalized' %}Edit Review{% elif p.review_status == 'draft' %}Continue Draft{% else %}Score Project{% endif %}
+              </a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <div class="card" style="text-align: center; padding: 48px 24px; color: #64748b;">
+    <p style="font-size: 16px; margin-bottom: 8px;">No projects currently assigned matching your filters.</p>
+    <p style="font-size: 14px;">Assignments are allocated by event organizers. Please check back shortly.</p>
+  </div>
+{% endif %}
+{% endblock %}

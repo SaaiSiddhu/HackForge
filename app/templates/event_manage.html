@@ -176,6 +176,262 @@
   </div>
 </div>
 
+<!-- Judging & Evaluation Section -->
+<div style="margin-top: 32px; margin-bottom: 16px;">
+  <h2 style="font-size: 20px; border-bottom: 2px solid var(--border-color); padding-bottom: 8px;">Judging, Assignments & Rubrics</h2>
+</div>
+
+{% if invited_token %}
+  <div class="alert alert-success" style="margin-bottom: 24px;">
+    <strong>Judge Invitation Generated!</strong> Share this one-time link with the invited judge:
+    <div style="margin-top: 8px;">
+      <input type="text" readonly value="{{ request.base_url }}events/{{ event.id }}/judges/invite/{{ invited_token }}" style="width: 100%; font-family: monospace; font-size: 13px;" onclick="this.select();">
+    </div>
+  </div>
+{% endif %}
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+  <!-- Judging Progress Card -->
+  <div class="card">
+    <h2>Judging Progress</h2>
+    {% if judging_progress %}
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;">
+        <div style="padding: 12px; background: var(--bg-surface); border-radius: 6px; text-align: center; border: 1px solid var(--border-color);">
+          <div style="font-size: 24px; font-weight: 700; color: var(--text-color);">{{ judging_progress.total_assignments }}</div>
+          <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-top: 4px;">Total Assignments</div>
+        </div>
+        <div style="padding: 12px; background: var(--bg-surface); border-radius: 6px; text-align: center; border: 1px solid var(--border-color);">
+          <div style="font-size: 24px; font-weight: 700; color: var(--success, #22c55e);">{{ judging_progress.finalized_reviews }}</div>
+          <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-top: 4px;">Finalized</div>
+        </div>
+        <div style="padding: 12px; background: var(--bg-surface); border-radius: 6px; text-align: center; border: 1px solid var(--border-color);">
+          <div style="font-size: 24px; font-weight: 700; color: var(--warning, #f59e0b);">{{ judging_progress.draft_reviews }}</div>
+          <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-top: 4px;">In Draft</div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+        <div style="padding: 10px 14px; background: var(--bg-surface); border-radius: 6px; border: 1px solid var(--border-color);">
+          <span style="font-size: 12px; color: var(--text-muted);">Unstarted:</span>
+          <strong>{{ judging_progress.unstarted_assignments }}</strong>
+        </div>
+        <div style="padding: 10px 14px; background: var(--bg-surface); border-radius: 6px; border: 1px solid var(--border-color);">
+          <span style="font-size: 12px; color: var(--text-muted);">Under-covered Projects:</span>
+          <strong>{{ judging_progress.projects_under_covered }}</strong>
+        </div>
+      </div>
+      <p class="hint" style="margin: 0;">Judges with outstanding reviews: <strong>{{ judging_progress.judges_with_outstanding_work }}</strong></p>
+    {% else %}
+      <p style="color: var(--text-muted); font-size: 14px;">Judging progress data not available.</p>
+    {% endif %}
+  </div>
+
+  <!-- Batch Assignment Card -->
+  <div class="card">
+    <h2>Batch Judge Assignment</h2>
+    <p class="hint" style="margin-bottom: 16px;">
+      Deterministically distributes submitted projects across registered judges. Enforces track restrictions, balances workload, and excludes conflicts of interest (judges cannot review their own team).
+    </p>
+    <form method="POST" action="/events/{{ event.id }}/manage/assignments/batch">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-group">
+        <label for="target_reviews">Target Reviews Per Project</label>
+        <input type="number" id="target_reviews" name="target_reviews_per_project" value="3" min="1" max="10" required>
+        <span class="hint">Recommended: 3 reviews per project for standard evaluation.</span>
+      </div>
+      <button type="submit" class="btn btn-primary" onclick="return confirm('Run batch assignment? This will assign eligible judges to unassigned projects.');">
+        Run Batch Assignment
+      </button>
+    </form>
+  </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+  <!-- Judges & Invitations Card -->
+  <div class="card">
+    <h2>Judges & Invitations</h2>
+    
+    <h3 style="font-size: 14px; margin-top: 16px; margin-bottom: 8px;">Active Judges ({{ judges|length }})</h3>
+    {% if judges %}
+      <div class="table-responsive" style="max-height: 180px; overflow-y: auto; margin-bottom: 16px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Judge ID</th>
+              <th>Account</th>
+              <th>Tracks</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for j in judges %}
+              <tr>
+                <td><code>{{ j.id }}</code></td>
+                <td>{{ j.account.name if j.account else (j.account_id or 'Unlinked') }}</td>
+                <td>
+                  {% if j.tracks %}
+                    {% for tid in j.tracks %}
+                      <span class="status-badge status-draft" style="font-size: 10px;">{{ tid }}</span>
+                    {% endfor %}
+                  {% else %}
+                    <span style="color: var(--text-muted); font-size: 12px;">All Tracks</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 16px;">No registered judges yet.</p>
+    {% endif %}
+
+    <h3 style="font-size: 14px; margin-top: 16px; margin-bottom: 8px;">Pending Invitations ({{ invitations|length }})</h3>
+    {% if invitations %}
+      <div class="table-responsive" style="max-height: 180px; overflow-y: auto; margin-bottom: 16px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for inv in invitations %}
+              <tr>
+                <td>
+                  <strong>{{ inv.email }}</strong>
+                  <div style="font-size: 11px; color: var(--text-muted);">
+                    Tracks: {{ inv.tracks|join(', ') if inv.tracks else 'All' }}
+                  </div>
+                </td>
+                <td>
+                  <span class="status-badge {{ 'status-submitted' if inv.status == 'accepted' else ('status-draft' if inv.status == 'pending' else 'status-draft') }}">
+                    {{ inv.status|capitalize }}
+                  </span>
+                </td>
+                <td>
+                  {% if inv.status == 'pending' %}
+                    <form method="POST" action="/events/{{ event.id }}/manage/judges/invitations/{{ inv.id }}/revoke" style="display:inline;">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <button type="submit" class="btn btn-secondary btn-sm" onclick="return confirm('Revoke this judge invitation?');">Revoke</button>
+                    </form>
+                  {% else %}
+                    <span style="color: var(--text-muted); font-size: 12px;">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 16px;">No pending invitations.</p>
+    {% endif %}
+
+    <h3 style="font-size: 14px; margin-top: 16px; margin-bottom: 8px;">Invite New Judge</h3>
+    <form method="POST" action="/events/{{ event.id }}/manage/judges/invite">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-group">
+        <label for="judge_email">Judge Email Address</label>
+        <input type="email" id="judge_email" name="email" placeholder="judge@example.com" required>
+      </div>
+      {% if tracks %}
+        <div class="form-group">
+          <label style="margin-bottom: 6px;">Track Permissions (leave unselected for all tracks)</label>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            {% for t in tracks %}
+              <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+                <input type="checkbox" name="tracks" value="{{ t.id }}">
+                <span>{{ t.name }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+      <button type="submit" class="btn btn-primary btn-sm">Generate & Send Invitation</button>
+    </form>
+  </div>
+
+  <!-- Rubric Configuration Card -->
+  <div class="card">
+    <h2>Evaluation Rubric</h2>
+    {% if rubric %}
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div>
+          <strong>{{ rubric.name }}</strong>
+          <span class="status-badge status-submitted" style="margin-left: 8px;">v{{ rubric.version }}</span>
+        </div>
+        <code style="font-size: 11px;">{{ rubric.id }}</code>
+      </div>
+      <p class="hint" style="margin-bottom: 12px;">Rubric changes freeze when reviews exist. Adding or modifying criteria will automatically snapshot a new rubric version.</p>
+
+      <div class="table-responsive" style="margin-bottom: 16px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Criterion</th>
+              <th>Weight</th>
+              <th>Range</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in rubric.criteria %}
+              <tr>
+                <td>
+                  <strong>{{ c.name }}</strong>
+                  <div style="font-size: 11px; color: var(--text-muted);">Key: <code>{{ c.key }}</code></div>
+                  {% if c.description %}
+                    <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">{{ c.description }}</div>
+                  {% endif %}
+                </td>
+                <td><strong>{{ c.weight }}</strong></td>
+                <td>{{ c.min_score }} – {{ c.max_score }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p style="color: var(--text-muted); font-size: 14px;">No rubric configured for this event.</p>
+    {% endif %}
+
+    <h3 style="font-size: 14px; margin-top: 16px; margin-bottom: 8px;">Add / Update Rubric Criterion</h3>
+    <form method="POST" action="/events/{{ event.id }}/manage/rubric">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div class="form-group">
+          <label for="crit_key">Criterion Key (unique)</label>
+          <input type="text" id="crit_key" name="key" placeholder="e.g. innovation" required>
+        </div>
+        <div class="form-group">
+          <label for="crit_name">Display Name</label>
+          <input type="text" id="crit_name" name="criterion_name" placeholder="e.g. Innovation & Novelty" required>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+        <div class="form-group">
+          <label for="crit_weight">Weight</label>
+          <input type="number" step="0.1" id="crit_weight" name="weight" value="1.0" min="0" required>
+        </div>
+        <div class="form-group">
+          <label for="crit_min">Min Score</label>
+          <input type="number" step="0.5" id="crit_min" name="min_score" value="1.0" required>
+        </div>
+        <div class="form-group">
+          <label for="crit_max">Max Score</label>
+          <input type="number" step="0.5" id="crit_max" name="max_score" value="5.0" required>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="crit_desc">Description (guidance for judges)</label>
+        <textarea id="crit_desc" name="description" rows="2" placeholder="Explain what high scores look like..."></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">Save Criterion</button>
+    </form>
+  </div>
+</div>
+
 <!-- Custom Questions & Audit Log Section -->
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;">
   <!-- Custom Questions Management -->

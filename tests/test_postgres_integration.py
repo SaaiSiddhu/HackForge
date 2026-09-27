@@ -220,10 +220,17 @@ def test_postgres_concurrent_two_sessions_occ(pg_engine):
         ).all()
         assert len(initial_logs) == 1
 
+    # Deterministic coordination using threading.Barrier
+    import threading
+
+    barrier = threading.Barrier(2)
+
     # Two concurrent operations with expected_version = 1
     def run_worker(worker_id: int):
         with Session(pg_engine) as session:
             account = session.get(Account, user_id)
+            # Coordinate so both workers issue their mutation attempt concurrently
+            barrier.wait(timeout=5)
             try:
                 res = save_project_draft_or_submission(
                     db=session,
@@ -252,10 +259,20 @@ def test_postgres_concurrent_two_sessions_occ(pg_engine):
     assert results.count("SUCCESS") == 1, f"Expected exactly 1 SUCCESS, got: {results}"
     assert results.count("CONFLICT") == 1, f"Expected exactly 1 CONFLICT, got: {results}"
 
+    winning_worker_result = r1 if r1[0] == "SUCCESS" else r2
+    conflict_worker_result = r2 if r1[0] == "SUCCESS" else r1
+    winning_title = winning_worker_result[2]
+
     # Verify final database state in hackforge_test
     with Session(pg_engine) as session:
         final_project = session.get(Project, project_id)
         assert final_project.version == 2
+        # Prove winning content persists in the database
+        assert final_project.title == winning_title
+        assert final_project.title in ("Updated by Worker 1", "Updated by Worker 2")
+
+        # Prove conflict error details
+        assert "Conflict" in conflict_worker_result[1]
 
         # Exactly 1 project_updated audit record exists
         update_logs = session.scalars(
@@ -266,3 +283,128 @@ def test_postgres_concurrent_two_sessions_occ(pg_engine):
         ).all()
         assert len(update_logs) == 1
         assert update_logs[0].payload["version"] == 2
+
+
+def test_postgres_deadline_change_during_waiting_mutation(pg_engine):
+    """Verify that a project mutation waiting on a row lock detects an organizer deadline change via explicit db.refresh."""
+    import concurrent.futures
+    import threading
+    import time
+    import uuid
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from app.models import Account, Event, Track
+    from app.services import (
+        create_account,
+        create_event,
+        create_team,
+        save_project_draft_or_submission,
+        update_event,
+    )
+
+    uid = uuid.uuid4().hex[:8]
+    event_id = f"evt_dl_test_{uid}"
+
+    # Setup open event and initial project at version 1
+    with Session(pg_engine) as setup_session:
+        user = create_account(
+            setup_session,
+            email=f"dl_test_{uid}@example.com",
+            password="Password123!",
+            name="DL Test Dev",
+        )
+        event = create_event(
+            setup_session,
+            event_id=event_id,
+            name=f"DL Test Event {uid}",
+            submissions_close=datetime.now(timezone.utc) + timedelta(hours=2),
+        )
+        track = Track(id=f"trk_dl_{uid}", event_id=event.id, name="DL Track")
+        setup_session.add(track)
+        setup_session.commit()
+
+        team = create_team(setup_session, event_id=event.id, name=f"DL Team {uid}", creator_account=user)
+        p1 = save_project_draft_or_submission(
+            db=setup_session,
+            event_id=event.id,
+            team_id=team.id,
+            account=user,
+            title="Initial DL Project",
+            summary="Testing deadline change under lock",
+            track_id=track.id,
+        )
+        assert p1.version == 1
+        project_id = p1.id
+        team_id = team.id
+        user_id = user.id
+        track_id = track.id
+
+    lock_acquired_event = threading.Event()
+    deadline_updated_event = threading.Event()
+
+    def holder_worker():
+        """Acquires lock on project row, waits for organizer to change deadline, then releases lock."""
+        with Session(pg_engine) as holder_session:
+            # Lock the project row
+            stmt = select(Project).where(Project.id == project_id).with_for_update()
+            p = holder_session.scalars(stmt).first()
+            assert p is not None
+            # Signal that lock is held
+            lock_acquired_event.set()
+            # Wait until deadline is updated to past
+            deadline_updated_event.wait(timeout=10)
+            time.sleep(0.1)  # Ensure update transaction has committed
+            holder_session.commit()
+
+    def mutation_worker():
+        """Attempts to update project while lock is held. Will block, and when unblocked must see closed deadline."""
+        # Wait until holder holds the project lock
+        lock_acquired_event.wait(timeout=10)
+        with Session(pg_engine) as mut_session:
+            account = mut_session.get(Account, user_id)
+            try:
+                save_project_draft_or_submission(
+                    db=mut_session,
+                    event_id=event_id,
+                    team_id=team_id,
+                    account=account,
+                    title="Attempted Mutation After Lock Wait",
+                    summary="Should be rejected by refreshed deadline check",
+                    track_id=track_id,
+                    project_id=project_id,
+                    expected_version=1,
+                )
+                return ("SUCCESS", None)
+            except ValueError as ve:
+                return ("REJECTED_DEADLINE", str(ve))
+            except Exception as exc:
+                return ("ERROR", str(exc))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f_holder = executor.submit(holder_worker)
+        # Give holder thread a moment to acquire lock
+        lock_acquired_event.wait(timeout=5)
+        # Launch mutation worker (it will block on the row lock)
+        f_mut = executor.submit(mutation_worker)
+        time.sleep(0.1)
+
+        # Organizer updates the event deadline to the past while mutation worker is waiting
+        with Session(pg_engine) as org_session:
+            past_deadline = datetime.now(timezone.utc) - timedelta(minutes=5)
+            update_event(org_session, event_id=event_id, submissions_close=past_deadline)
+
+        # Now signal holder worker to release the project lock
+        deadline_updated_event.set()
+
+        f_holder.result(timeout=10)
+        mut_status, mut_msg = f_mut.result(timeout=10)
+
+    assert mut_status == "REJECTED_DEADLINE", f"Expected REJECTED_DEADLINE, got: {mut_status}, msg: {mut_msg}"
+    assert "closed on" in mut_msg
+
+    # Verify project in DB was untouched
+    with Session(pg_engine) as verify_session:
+        p_check = verify_session.get(Project, project_id)
+        assert p_check.version == 1
+        assert p_check.title == "Initial DL Project"
+

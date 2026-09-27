@@ -16,3 +16,5 @@ participant = "Authorization: Bearer prt_demo"
 [routes]
 gallery = "/projects"
 submit  = "/events/evt_01/submit"
+judge_scores = "/events/evt_01/judges/jdg_01/scores"
+peer_scores  = "/events/evt_01/judges/jdg_01/scores"

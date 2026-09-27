@@ -1,51 +1,94 @@
-# Judging Engine & Normalization Status
+# Judging Engine & Evaluation System
 
-## Current Status: Phase 2 (T1 Workflows Implemented; Phase 3 Scope Guarded)
+## Current Status: Phase 3 Implemented (T1 Verified; T2 In Progress)
 
-> **IMPORTANT**: In accordance with the DOGFOOD 2026 specification and Phase 2 assignment scope, judging workflows, scoring forms, judge assignments, and score normalization algorithms are **NOT** implemented in Phase 2.
->
-> Review records from `fixtures.json` (30 judges, 126 reviews) remain safely stored in the database. All criteria ratings, reviewer emails, and private comments are strictly isolated on the backend. No judging data or peer scores are exposed. T2 is explicitly unclaimed in `.dogfood.toml`.
+HackForge Phase 3 implements the complete judge invitation lifecycle, weighted rubrics, batch assignment, private scoring, OCC version locking, and organizer progress tracking.
 
----
-
-## Planned Architecture (Phase 3 & Phase 4)
-
-### 1. Backend-Enforced Judge Isolation (Phase 3)
-- **Problem**: In commercial hackathon platforms, peer scores are frequently hidden only in client-side HTML templates while API endpoints leak all evaluations.
-- **Solution**: HackForge will enforce judge isolation at the database query layer:
-  - When a judge requests evaluations via `GET /api/judge/scores`, the authenticated session context is extracted.
-  - The query strictly filters `WHERE review.judge_id = current_user.judge_id`.
-  - Any request targeting another judge's evaluations (e.g. `GET /api/judge/scores?judge=judge_a` from `judge_b`) is rejected with **HTTP 403 Forbidden**.
-  - Participants attempting to access judge endpoints are rejected with **HTTP 403 Forbidden**.
-
-### 2. Weighted Scoring Rubrics (Phase 3)
-- Organizers define criteria with custom scales (e.g., $1 \dots 5$) and positive weights ($w_i$).
-- The raw composite score for a submission from judge $j$ is calculated as:
-  $$S_{j, p} = \frac{\sum_{i} w_i \cdot s_{j, p, i}}{\sum_{i} w_i}$$
-- **Handling Incomplete Batches**: Missing reviews remain missing. Missing evaluations are never imputed as zero, which would catastrophically penalize submissions through no fault of their own.
-
-### 3. Cross-Judge Score Normalization Proof (Phase 4)
-Hackathon judges exhibit varying degrees of leniency and strictness. HackForge will implement a documented, mathematically sound normalization algorithm:
-
-#### A. Standard Z-Score Calibration
-For judge $j$ with mean evaluation $\mu_j$ and sample standard deviation $\sigma_j$:
-$$z_{j, p} = \frac{S_{j, p} - \mu_j}{\sigma_j}$$
-
-The normalized score across all judges evaluating project $p$ is then scaled back to the standard rubric range:
-$$\bar{S}_p = \mu_{\text{global}} + \sigma_{\text{global}} \cdot \left( \frac{1}{|J_p|} \sum_{j \in J_p} z_{j, p} \right)$$
-
-#### B. Singular / Zero-Variance Boundary Case ($\sigma_j = 0$)
-In real hackathons (and in the official fixture dataset, e.g. `jdg_01` and `jdg_07`), judges sometimes give the exact same rating to every submission:
-- When $\sigma_j = 0$, division by zero is undefined.
-- **Resolution**: Detect zero variance ($\sigma_j < 10^{-6}$) and apply a mean-shift offset instead of Z-score scaling:
-  $$S'_{j, p} = S_{j, p} + (\mu_{\text{global}} - \mu_j)$$
-  This centers the judge's evaluations to the global mean without distorting variance.
-
-#### C. Sparse Review Connectivity
-With 30 judges and 41 projects, the review graph is sparse ($126 / (30 \times 41) \approx 10.2\%$). The normalization engine will compute global connected components before calibration to ensure statistical comparability.
+> **Phase Boundary Note**: In accordance with the DOGFOOD 2026 specification, T2 remains explicitly unclaimed in `.dogfood.toml` (`claimed = ["T1"]`). Cross-judge score normalization (Z-score calibration, sparse connectivity components) and comprehensive organizer CSV exports belong to the upcoming Phase 4 milestone.
+> Voting, certificates, webhooks, and pairwise judging are out of scope.
 
 ---
 
-## Organizer Verification & Audits (Phase 4)
-- **Progress View**: Tracks completed vs pending evaluations per track.
-- **Audit Export**: CSV export available exclusively to authenticated organizers (`GET /api/export.csv`), including raw scores, judge identifiers, normalized scores, and ranking deltas.
+## Implemented Architecture (Phase 3)
+
+### 1. Judge Invitation Lifecycle
+- **Organizer Invitation Flow**:
+  - Organizers create invitations with target email and optional track restrictions (`POST /events/{event_id}/manage/judges/invite`).
+  - Generates a high-entropy 256-bit token (`secrets.token_urlsafe(32)`).
+  - Only the cryptographic SHA-256 hash (`hashlib.sha256(token.encode()).hexdigest()`) is stored in `judge_invitations.token_hash`.
+  - The raw one-time link (`/events/{event_id}/judge-invite/{token}`) is presented to the organizer once in an alert banner.
+- **Invitation Acceptance**:
+  - Visiting `GET /events/{event_id}/judge-invite/{token}` renders the invitation details (event name, track permissions, expiration date) without changing state (strictly idempotent GET).
+  - Submitting `POST /events/{event_id}/judge-invite/{token}/accept` validates:
+    - Token exists and matches SHA-256 hash.
+    - Invitation status is `"pending"`.
+    - Expiration date (`expires_at`, default 7 days) has not passed.
+  - Registers the authenticated account as a `Judge` in `judges` and assigns the `"judge"` role in `event_roles`.
+  - Grants track permissions in `judge_tracks` based on the invitation configuration.
+  - Atomically marks the invitation `"accepted"` with `accepted_at` and `accepted_by_account_id`.
+- **Revocation & Expiration**:
+  - Organizers can revoke pending invitations (`POST /events/{event_id}/manage/judges/invitations/{inv_id}/revoke`).
+  - Expired and revoked tokens reject acceptance attempts with descriptive error messages.
+
+### 2. Weighted Scoring Rubrics
+- **Configuration & Validation**:
+  - Criteria define `key`, `name`, `weight` (> 0), `min_score`, `max_score` (`min_score < max_score`), and `sort_order`.
+  - Rubric updates check whether existing reviews have already evaluated projects using the rubric.
+  - **Version Freezing / Snapshotting**: If reviews exist for the current rubric, editing the rubric does not mutate existing completed evaluations. Instead, a new rubric version is created (`version = previous_version + 1`), preserving the historical rubric snapshot for older reviews while making the new version active for future evaluations.
+- **Weighted Scoring Formula**:
+  - The raw normalized composite score for a submission is calculated on a 0–100 scale:
+    $$S_{\text{raw}} = \frac{\sum_{i=1}^n w_i \cdot s_i}{\sum_{i=1}^n w_i} \times 100$$
+    where:
+    - $w_i > 0$ is the criterion weight.
+    - $s_i \in [0, 1]$ is the normalized criterion score:
+      $$s_i = \frac{\text{raw\_score}_i - \min_i}{\max_i - \min_i}$$
+    - If all criteria have $\min_i = \max_i$, $s_i$ defaults to 1.0.
+
+### 3. Batch Judge Assignment Engine
+- **Fair Load Balancing**:
+  - Targets $k$ reviews per submitted project (`POST /events/{event_id}/manage/assignments/batch`).
+  - Excludes draft projects (`status='draft'`) — only submitted projects receive assignments.
+  - **Track Restrictions**: Judges with explicit track assignments are only allocated projects within their permitted tracks. Judges with no track restrictions are eligible across all tracks.
+  - **Conflict of Interest Exclusion**: If a judge is an active team member of a project's team, the assignment engine strictly excludes that judge from evaluating their own team's submission.
+  - Prioritizes judges with the lowest current workload and projects with the fewest assignments, using deterministic ID tie-breaking.
+  - Accurately reports under-covered projects when the pool of eligible judges is insufficient.
+
+### 4. Judge Scoring & Optimistic Concurrency Control (OCC)
+- **Draft vs Finalized Reviews**:
+  - Draft evaluations (`is_final=False`) allow judges to save partial criteria scores and draft comments without validation rejections.
+  - Finalized evaluations (`is_final=True`) require all rubric criteria to be scored within numeric bounds.
+- **Atomic Concurrency Control**:
+  - Reviews acquire a row-level database lock (`SELECT ... FOR UPDATE`).
+  - Reviews enforce optimistic version checking (`version_id_col` / `version`).
+  - If a judge attempts to update a review with a stale `expected_version`, the service raises `ConcurrencyConflictError` and records an atomic conflict event in `event_audit_logs` (`action="review.conflict"`).
+
+### 5. Backend-Enforced Judge Isolation
+- **Strict Query Isolation**:
+  - Endpoint `GET /events/{event_id}/judges/{judge_id}/scores` is protected on the server:
+    - A judge can only access their own scores (`current_account.judge.id == judge_id`).
+    - Attempting to inspect peer scores returns **HTTP 403 Forbidden**.
+    - Participants attempting to access judge endpoints receive **HTTP 403 Forbidden**.
+    - Organizers who are also active judges in the event are blocked from accessing peer scores to prevent judging bias.
+- Evaluation routes (`GET/POST /events/{event_id}/judge/projects/{project_id}/review`) require:
+  - Account must be an assigned judge for the specific project.
+  - Project must belong to the judge's permitted tracks.
+  - Violations return **HTTP 403 Forbidden**.
+
+### 6. Organizer Progress Dashboard
+- Real-time judging progress metrics displayed in the organizer event management console (`/events/{event_id}/manage`):
+  - Total Judge Assignments
+  - Finalized Evaluations
+  - Draft Evaluations
+  - Unstarted Assignments
+  - Under-covered Projects count
+  - Judges with Outstanding Workload count
+- Interactive batch assignment trigger and judge invitation management table.
+
+---
+
+## Upcoming Milestone: Phase 4 (Score Normalization & CSV Exports)
+- Cross-judge Z-score calibration.
+- Zero-variance handling ($\sigma_j = 0$).
+- Connected-components graph analysis for sparse evaluation networks.
+- Full organizer audit CSV export (`GET /events/{event_id}/export/judging.csv`).
+- Official Dogfood T2 claim.

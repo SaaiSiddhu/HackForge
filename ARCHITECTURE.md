@@ -87,3 +87,11 @@
    - Timezone normalization: all timestamps parsed to UTC timezone-aware datetimes.
    - Referential integrity: validates judge track interests against registered event tracks.
    - Safeguards `--reset` to prevent accidental data loss in production environments.
+
+8. **Judging & Evaluation Subsystem (`app/judging_services.py`, `app/routers/judging.py`)**:
+   - **Modular Routing**: Judging routes are isolated in `app/routers/judging.py` and included in the main FastAPI application via `app.include_router(judging.router)`, keeping `app/main.py` clean and maintainable. Shared template configuration resides in `app/templating.py`.
+   - **Judge Invitation Lifecycle**: One-time invite links backed by cryptographic SHA-256 token hashes, enforcing track restrictions and 7-day expiration.
+   - **Weighted Scoring Rubrics**: Multi-criteria weighted rubrics with version freezing upon completed reviews to guarantee historical review immutability.
+   - **Batch Assignment**: Deterministic, load-balanced judge assignment that strictly excludes conflicts of interest (team co-membership) and honors track restrictions.
+   - **Concurrency Control & Backend Isolation**: Review evaluations utilize `SELECT ... FOR UPDATE` with optimistic concurrency checking on `Review.version`. HTTP endpoints strictly deny peer review access and participant access at the database query layer (403 Forbidden).
+
