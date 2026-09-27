@@ -1,0 +1,5 @@
+{% extends "base.html" %}{% block content %}
+<p class="eyebrow">THE PROJECT GALLERY</p><h1>Ideas made real.</h1><p class="intro">Explore what teams are building, across every track.</p>
+<form class="filters" action="/projects"><label>Search projects<input type="search" name="q" value="{{ q }}" placeholder="Search by project name"></label><label>Track<select name="track"><option value="">All tracks</option>{% for t in tracks %}<option value="{{ t.id }}" {% if track == t.id %}selected{% endif %}>{{ t.name }}</option>{% endfor %}</select></label><button>Explore projects</button><a href="/projects">Reset</a></form>
+<p class="count">{{ rows|length }} project records</p><section class="grid" aria-label="Projects">{% for project, track_name, team_name in rows %}<article><span class="tag">{{ track_name }}</span><h2><a href="/projects/{{ project.id }}">{{ project.title }}</a></h2><p>{{ project.summary }}</p><div class="meta">{{ team_name }}<span>{{ project.id }}</span></div></article>{% else %}<p>No projects match. Try another name or track.</p>{% endfor %}</section>
+{% endblock %}
