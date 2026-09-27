@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="error-container">
+  <p class="eyebrow">STATUS {{ status_code }}</p>
+  <h1>{% if status_code == 404 %}Page not found{% elif status_code == 500 %}Server error{% else %}Notice{% endif %}</h1>
+  <p class="intro">{{ message }}</p>
+  <div style="margin-top: 28px;">
+    <a href="/projects" class="btn-primary" style="display:inline-block; padding: 12px 20px; background: #b9f56a; color: #172408; font-weight: 700; text-decoration: none; border-radius: 8px;">← Return to Project Gallery</a>
+  </div>
+</div>
+{% endblock %}

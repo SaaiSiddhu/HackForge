@@ -1,5 +1,50 @@
-{% extends "base.html" %}{% block content %}
-<p class="eyebrow">THE PROJECT GALLERY</p><h1>Ideas made real.</h1><p class="intro">Explore what teams are building, across every track.</p>
-<form class="filters" action="/projects"><label>Search projects<input type="search" name="q" value="{{ q }}" placeholder="Search by project name"></label><label>Track<select name="track"><option value="">All tracks</option>{% for t in tracks %}<option value="{{ t.id }}" {% if track == t.id %}selected{% endif %}>{{ t.name }}</option>{% endfor %}</select></label><button>Explore projects</button><a href="/projects">Reset</a></form>
-<p class="count">{{ rows|length }} project records</p><section class="grid" aria-label="Projects">{% for project, track_name, team_name in rows %}<article><span class="tag">{{ track_name }}</span><h2><a href="/projects/{{ project.id }}">{{ project.title }}</a></h2><p>{{ project.summary }}</p><div class="meta">{{ team_name }}<span>{{ project.id }}</span></div></article>{% else %}<p>No projects match. Try another name or track.</p>{% endfor %}</section>
+{% extends "base.html" %}
+{% block content %}
+<p class="eyebrow">THE PROJECT GALLERY</p>
+<h1>Ideas made real.</h1>
+<p class="intro">Explore what teams are building, across every track.</p>
+
+<form class="filters" action="/projects" method="get" role="search" aria-label="Filter projects">
+  <div class="field">
+    <label for="search-input">Search projects</label>
+    <input type="search" id="search-input" name="q" value="{{ q }}" placeholder="Search by project title" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="track-select">Track</label>
+    <select id="track-select" name="track">
+      <option value="">All tracks</option>
+      {% for t in tracks %}
+      <option value="{{ t.id }}" {% if track == t.id %}selected{% endif %}>{{ t.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="actions">
+    <button type="submit">Filter projects</button>
+    {% if q or track %}
+    <a href="/projects" class="reset-link">Clear filters</a>
+    {% endif %}
+  </div>
+</form>
+
+<p class="count" aria-live="polite">{{ rows|length }} project record{% if rows|length != 1 %}s{% endif %}</p>
+
+<section class="grid" aria-label="Projects">
+  {% for project, track_name, team_name in rows %}
+  <article>
+    <span class="tag">{{ track_name }}</span>
+    <h2><a href="/projects/{{ project.id }}">{{ project.title }}</a></h2>
+    <p>{{ project.summary }}</p>
+    <div class="meta">
+      <span>{{ team_name }}</span>
+      <span class="badge">{{ project.id }}</span>
+    </div>
+  </article>
+  {% else %}
+  <div class="empty-state">
+    <h3>No matching projects found</h3>
+    <p>No submissions match your query {% if q %}<strong>"{{ q }}"</strong>{% endif %} {% if track %}in this track{% endif %}.</p>
+    <a href="/projects" class="btn-clear">Show all projects</a>
+  </div>
+  {% endfor %}
+</section>
 {% endblock %}

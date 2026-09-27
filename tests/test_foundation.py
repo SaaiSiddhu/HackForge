@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
+from app.config import clear_settings_cache
 from app.database import Base, get_db
 from app.main import app
 from app.models import Event, Project, Review
@@ -11,7 +12,11 @@ from app.seed import FIXTURES, seed
 
 
 @pytest.fixture
-def db():
+def db(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    clear_settings_cache()
+
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
@@ -19,6 +24,7 @@ def db():
         session.commit()
         yield session
     engine.dispose()
+    clear_settings_cache()
 
 
 def test_seed_preserves_all_records_and_local_edits(db):

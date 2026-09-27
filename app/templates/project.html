@@ -1,1 +1,40 @@
-{% extends "base.html" %}{% block content %}<a href="/projects">← All projects</a><p class="eyebrow">{{ track.name }}</p><h1>{{ project.title }}</h1><p class="intro">{{ project.summary }}</p><article><h2>Built by {{ team.name }}</h2><p>Submitted {{ project.submitted_at.strftime('%d %b %Y') }}</p>{% if repo_url %}<a href="{{ repo_url }}" target="_blank" rel="noopener noreferrer">View repository ↗</a>{% endif %}</article>{% endblock %}
+{% extends "base.html" %}
+{% block content %}
+<nav aria-label="Breadcrumb" class="breadcrumb">
+  <a href="/projects">← All projects</a>
+</nav>
+
+<div class="project-header">
+  <p class="eyebrow">{{ track.name if track else "Unassigned track" }}</p>
+  <h1>{{ project.title }}</h1>
+  <p class="intro">{{ project.summary }}</p>
+</div>
+
+<article class="detail-card">
+  <h2>Project details</h2>
+  <dl class="detail-list">
+    <div class="detail-item">
+      <dt>Team</dt>
+      <dd>{{ team.name if team else "Independent" }}</dd>
+    </div>
+    <div class="detail-item">
+      <dt>Submission identifier</dt>
+      <dd><code>{{ project.id }}</code></dd>
+    </div>
+    <div class="detail-item">
+      <dt>Submitted</dt>
+      <dd>{{ project.submitted_at.strftime('%d %b %Y, %H:%M UTC') }}</dd>
+    </div>
+    {% if repo_url %}
+    <div class="detail-item">
+      <dt>Repository</dt>
+      <dd>
+        <a href="{{ repo_url }}" target="_blank" rel="noopener noreferrer" class="external-link">
+          View source repository ↗
+        </a>
+      </dd>
+    </div>
+    {% endif %}
+  </dl>
+</article>
+{% endblock %}
